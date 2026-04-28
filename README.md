@@ -4,10 +4,10 @@ A self-hostable Android app store backend built on Cloudflare Workers, D1, and S
 
 ## What's included
 
-- **Store API** — Cloudflare Worker handling all store routes, from developer submissions to the public catalog
-- **Auth adapter system** — plug in your own login provider without touching store logic
-- **Demo auth** — static bearer tokens for self-hosted deployments with no account system
-- **Schema** — D1 SQLite migrations for the store tables
+- **Store API** - Cloudflare Worker handling all store routes, from developer submissions to the public catalog
+- **Auth adapter system** - plug in your own login provider without touching store logic
+- **Demo auth** - static bearer tokens for self-hosted deployments with no account system
+- **Schema** - D1 SQLite migrations for the store tables
 
 The scanner service lives in [sub_modules](https://github.com/your-org/sub_modules).
 
