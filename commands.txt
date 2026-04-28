@@ -1,0 +1,3 @@
+UPDATE ALL SUBMODULES AT ONCE:
+
+@echo off && cd server_code && git pull origin main && cd sub_modules && git pull origin main && cd .. && git add sub_modules && git commit -m "update scanner submodule" && git push && cd .. && git add server_code && git commit -m "update server submodule" && git push && echo Done.
