@@ -1,8 +1,8 @@
 # SafeHaven
 
-SafeHaven is an Android app store focused on transparency and most importantly, security. 
+SafeHaven is an Android app distribution platform focused on transparency and security. Apps are linked to their source repositories, verified against developer ownership, and regularly scanned both before and after being made available.
+To get updated on the latest developement news, join the discord! https://discord.gg/VYubQJfcYM
 
-It is designed for people who want an alternative android app store without the risk of getting malware from uknown sources.
 
 ## What this repo contains
 
