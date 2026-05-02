@@ -1,0 +1,27 @@
+{
+  "name": "safehaven-store-demo",
+  "main": "src/index.demo.js",
+  "compatibility_date": "2026-04-28",
+  "d1_databases": [
+    {
+      "binding": "example_db",
+      "database_name": "safehaven_store_demo",
+      "database_id": "replace-with-your-d1-id"
+    }
+  ],
+  "triggers": {
+    "crons": [
+      "0 3 1 * *"
+    ]
+  },
+  "vars": {
+    "DEMO_DEV_TOKEN": "dev-token-change-me",
+    "DEMO_ADMIN_TOKEN": "admin-token-change-me",
+    "SH_SCANNER_SECRET": "scanner-secret-change-me",
+    "SH_S3_ENDPOINT": "https://example-s3-endpoint.com",
+    "SH_S3_BUCKET": "safehaven-store",
+    "SH_S3_REGION": "auto",
+    "SH_S3_ACCESS_KEY": "replace-me",
+    "SH_S3_SECRET_KEY": "replace-me"
+  }
+}
