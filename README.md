@@ -1,5 +1,5 @@
 <p>
-  <img src="assets/icons/ic_launcher.png" width="92" alt="SafeHaven logo">
+  <img src="assets/gitImages/logo.png" width="92" alt="SafeHaven logo">
 </p>
 
 # SafeHaven
@@ -50,19 +50,15 @@ Community/imported listings are kept separate from verified developer listings. 
     </td>
     <td width="20%" align="center">
       <img src="assets/gitImages/2.jpg" width="190" alt="SafeHaven app details"><br>
-      <sub><strong>App Details</strong></sub>
+      <sub><strong>App Screen</strong></sub>
     </td>
     <td width="20%" align="center">
       <img src="assets/gitImages/3.jpg" width="190" alt="SafeHaven categories"><br>
-      <sub><strong>Categories</strong></sub>
-    </td>
-    <td width="20%" align="center">
-      <img src="assets/gitImages/4.jpg" width="190" alt="SafeHaven security signals"><br>
       <sub><strong>Security Signals</strong></sub>
     </td>
     <td width="20%" align="center">
-      <img src="assets/gitImages/5.jpg" width="190" alt="SafeHaven developer flow"><br>
-      <sub><strong>Developer Flow</strong></sub>
+      <img src="assets/gitImages/4.jpg" width="190" alt="SafeHaven security signals"><br>
+      <sub><strong>Search</strong></sub>
     </td>
   </tr>
 </table>
