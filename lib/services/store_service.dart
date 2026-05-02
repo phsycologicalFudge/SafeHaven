@@ -42,7 +42,6 @@ class StoreService {
     if (token == null || token.isEmpty) {
       throw const StoreApiException('missing_token');
     }
-
     await saveToken(token);
   }
 
@@ -113,6 +112,45 @@ class StoreService {
     _throwIfBad(res);
 
     return DeveloperAppDetail.fromJson(_decode(res.body));
+  }
+
+  Future<String> getDownloadUrl({
+    required String packageName,
+    required int versionCode,
+  }) async {
+    final res = await http.get(
+      Uri.parse(
+        '$defaultBaseUrl/store/apps/${Uri.encodeComponent(packageName)}/download/$versionCode',
+      ),
+    );
+
+    _throwIfBad(res);
+
+    final body = _decode(res.body);
+    final url  = body['url'];
+    if (url == null || url.toString().isEmpty) {
+      throw const StoreApiException('missing_url');
+    }
+    return url.toString();
+  }
+
+  Future<String> submitRating({
+    required String packageName,
+    required String deviceToken,
+    required int rating,
+  }) async {
+    final res = await http.post(
+      Uri.parse('$defaultBaseUrl/store/ratings'),
+      headers: {'content-type': 'application/json; charset=utf-8'},
+      body: jsonEncode({
+        'packageName': packageName,
+        'deviceToken': deviceToken,
+        'rating': rating,
+      }),
+    );
+
+    _throwIfBad(res);
+    return 'ok';
   }
 
   Future<String> _requireToken() async {
@@ -192,17 +230,25 @@ class StoreAccount {
 class StoreIndex {
   const StoreIndex({
     required this.timestamp,
+    required this.categories,
     required this.apps,
   });
 
   final int timestamp;
+  final Map<String, String> categories;
   final List<PublicStoreApp> apps;
 
   factory StoreIndex.fromJson(Map<String, dynamic> json) {
     final apps = json['apps'];
+    final cats = json['categories'];
 
     return StoreIndex(
       timestamp: _asInt(json['timestamp']),
+      categories: cats is Map
+          ? Map<String, String>.fromEntries(
+        cats.entries.map((e) => MapEntry(e.key.toString(), e.value.toString())),
+      )
+          : const {},
       apps: apps is List
           ? apps
           .whereType<Map<String, dynamic>>()
@@ -221,7 +267,12 @@ class PublicStoreApp {
     required this.description,
     required this.repoUrl,
     required this.trustLevel,
+    required this.category,
+    required this.ratingAvg,
+    required this.ratingCount,
     required this.versions,
+    required this.iconUrl,
+    required this.screenshots,
   });
 
   final String packageName;
@@ -230,10 +281,16 @@ class PublicStoreApp {
   final String description;
   final String repoUrl;
   final String trustLevel;
+  final String category;
+  final double ratingAvg;
+  final int ratingCount;
   final List<StoreVersion> versions;
+  final String iconUrl;
+  final List<String> screenshots;
 
   factory PublicStoreApp.fromJson(Map<String, dynamic> json) {
     final versions = json['versions'];
+    final screenshots = json['screenshots'];
 
     return PublicStoreApp(
       packageName: _asString(json['packageName']),
@@ -241,23 +298,51 @@ class PublicStoreApp {
       summary: _asString(json['summary']),
       description: _asString(json['description']),
       repoUrl: _asString(json['repoUrl']),
-      trustLevel: _asString(json['trustLevel'], fallback: 'verified_source'),
+      trustLevel: _normaliseTrustLevel(json['trustLevel']),
+      category: _asString(json['category']),
+      ratingAvg: _asDouble(json['ratingAvg']),
+      ratingCount: _asInt(json['ratingCount']),
       versions: versions is List
           ? versions
           .whereType<Map<String, dynamic>>()
           .map(StoreVersion.fromJson)
           .toList()
           : const [],
+      iconUrl: _asString(json['iconUrl']),
+      screenshots: screenshots is List
+          ? screenshots.whereType<String>().toList()
+          : const [],
     );
   }
 
   StoreVersion? get latestVersion => versions.isEmpty ? null : versions.first;
 
+  bool get hasTrustBadge => trustLevel.isNotEmpty;
+
   bool get securityReviewed => trustLevel == 'security_reviewed';
 
+  bool get verifiedSource => trustLevel == 'verified_source';
+
   String get trustLabel {
-    if (trustLevel == 'security_reviewed') return 'Security Reviewed';
-    return 'Verified Source';
+    switch (trustLevel) {
+      case 'security_reviewed':
+        return 'Security Reviewed';
+      case 'verified_source':
+        return 'Verified Source';
+      default:
+        return 'Unverified developer';
+    }
+  }
+
+  String get trustDescription {
+    switch (trustLevel) {
+      case 'security_reviewed':
+        return 'This app has received an enhanced security review.';
+      case 'verified_source':
+        return 'Source ownership has been verified for this listing.';
+      default:
+        return 'This listing was not submitted by the original developer.';
+    }
   }
 
   String get displaySummary {
@@ -270,6 +355,11 @@ class PublicStoreApp {
     final latest = latestVersion;
     if (latest == null || latest.versionName.isEmpty) return 'No live version';
     return 'v${latest.versionName}';
+  }
+
+  String get displayRating {
+    if (ratingCount == 0) return '—';
+    return ratingAvg.toStringAsFixed(1);
   }
 }
 
@@ -485,9 +575,27 @@ int _asInt(dynamic value) {
   return int.tryParse(value?.toString() ?? '') ?? 0;
 }
 
+double _asDouble(dynamic value) {
+  if (value is double) return value;
+  if (value is num) return value.toDouble();
+  return double.tryParse(value?.toString() ?? '') ?? 0.0;
+}
+
 bool _asBool(dynamic value) {
   if (value is bool) return value;
   if (value is num) return value != 0;
   final clean = value?.toString().toLowerCase().trim();
   return clean == 'true' || clean == '1' || clean == 'yes';
+}
+
+String _normaliseTrustLevel(dynamic value) {
+  final clean = value?.toString().trim().toLowerCase();
+
+  switch (clean) {
+    case 'verified_source':
+    case 'security_reviewed':
+      return clean!;
+    default:
+      return '';
+  }
 }

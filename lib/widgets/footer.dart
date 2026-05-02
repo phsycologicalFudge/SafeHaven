@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../services/theme/theme_manager.dart';
+
 class SafeHavenFooter extends StatelessWidget {
   const SafeHavenFooter({
     super.key,
@@ -12,15 +14,16 @@ class SafeHavenFooter extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = SafeHavenTheme.of(context);
     final bottomPadding = MediaQuery.of(context).padding.bottom;
 
     return Container(
-      height: 58 + bottomPadding,
+      height: 60 + bottomPadding,
       padding: EdgeInsets.only(bottom: bottomPadding),
-      decoration: const BoxDecoration(
-        color: Color(0xFF0B0C10),
+      decoration: BoxDecoration(
+        color: colors.navBackground,
         border: Border(
-          top: BorderSide(color: Color(0xFF171A21), width: 1),
+          top: BorderSide(color: colors.navBorder, width: 1),
         ),
       ),
       child: Row(
@@ -46,13 +49,6 @@ class SafeHavenFooter extends StatelessWidget {
             label: 'History',
             onSelected: onSelected,
           ),
-          _FooterItem(
-            index: 3,
-            selectedIndex: selectedIndex,
-            icon: Icons.person_outline_rounded,
-            label: 'Account',
-            onSelected: onSelected,
-          ),
         ],
       ),
     );
@@ -76,18 +72,28 @@ class _FooterItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = SafeHavenTheme.of(context);
     final selected = index == selectedIndex;
-    final color = selected ? Colors.white : const Color(0xFF8B909B);
 
     return Expanded(
       child: InkWell(
         onTap: () => onSelected(index),
         child: SizedBox(
-          height: 58,
+          height: 60,
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(icon, size: 21, color: color),
+              if (selected)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 18,
+                    vertical: 4,
+                  ),
+                  decoration: colors.gradientPill,
+                  child: Icon(icon, size: 19, color: Colors.white),
+                )
+              else
+                Icon(icon, size: 21, color: colors.textMuted),
               const SizedBox(height: 3),
               Text(
                 label,
@@ -96,7 +102,7 @@ class _FooterItem extends StatelessWidget {
                 style: TextStyle(
                   fontSize: 10.5,
                   fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                  color: color,
+                  color: selected ? colors.text : colors.textMuted,
                 ),
               ),
             ],
