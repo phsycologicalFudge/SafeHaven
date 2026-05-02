@@ -1,16 +1,86 @@
+<p>
+  <img src="assets/icons/ic_launcher.png" width="92" alt="SafeHaven logo">
+</p>
+
 # SafeHaven
 
-SafeHaven is an Android app distribution platform focused on transparency and security. Apps are linked to their source repositories, verified against developer ownership, and regularly scanned both before and after being made available.
-To get updated on the latest developement news, join the discord! https://discord.gg/VYubQJfcYM
+### Open Android app distribution with source links, verification, and transparent security signals.
 
+SafeHaven is an Android app store that is focused on trust, source visibility, and very clear app metadata. Apps can be linked to their source repositories, verified against developer ownership, scanned before release, and rechecked after being made available.
 
-## What this repo contains
+<p>
+  <img src="https://img.shields.io/github/v/release/phsycologicalFudge/SafeHaven?style=for-the-badge&logo=github&label=Release&color=6366f1" alt="Release">
+  <img src="https://img.shields.io/github/downloads/phsycologicalFudge/SafeHaven/total?style=for-the-badge&logo=github&label=Downloads&color=10b981" alt="Downloads">
+  <img src="https://img.shields.io/github/license/phsycologicalFudge/SafeHaven?style=for-the-badge&label=License&color=64748b" alt="License">
+</p>
 
-- The Android client
-- App screens and UI code
-- Store/catalog browsing logic
-- Shared project files for building the app
-- 'server_code', which links to the backend/store server code
+<p>
+  <a href="https://buymeacoffee.com/ryanfromcolourswift">
+    <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" height="48" alt="Buy me a coffee">
+  </a>
+</p>
+
+## What is SafeHaven?
+
+SafeHaven is an Android app distribution platform built around transparency. Instead of using the 'trust me bro' methology, SafeHaven aims to show where the app comes from, whether the source has been verified, and if it has passed all malware checks. 
+
+## Trust layers
+
+| Layer | What it does |
+|---|---|
+| **Source linked** | Apps can include a public source repository. |
+| **Verified Source** | The developer proves control of the linked repository by adding a .safehaven file in their repo during setup. |
+| **Unverified listings** | Community/imported apps can be listed without claiming developer ownership. |
+| **APK scanning** | Submitted APKs are scanned before being approved. |
+| **Rechecks** | Apps can be rescanned after release to keep metadata fresh. |
+
+## App submissions
+
+Developers can register an app, link it to a repository, verify ownership, upload releases, and manage store metadata. SafeHaven checks the submitted APK through its [scan pipeline](https://github.com/phsycologicalFudge/sub_modules) before it becomes available in the public catalog.
+
+Community/imported listings are kept separate from verified developer listings. They can help users discover open-source/open code Android apps, while still showing that the listing has not been claimed by the original developer.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="20%" align="center">
+      <img src="assets/gitImages/1.jpg" width="190" alt="SafeHaven home screen"><br>
+      <sub><strong>Home</strong></sub>
+    </td>
+    <td width="20%" align="center">
+      <img src="assets/gitImages/2.jpg" width="190" alt="SafeHaven app details"><br>
+      <sub><strong>App Details</strong></sub>
+    </td>
+    <td width="20%" align="center">
+      <img src="assets/gitImages/3.jpg" width="190" alt="SafeHaven categories"><br>
+      <sub><strong>Categories</strong></sub>
+    </td>
+    <td width="20%" align="center">
+      <img src="assets/gitImages/4.jpg" width="190" alt="SafeHaven security signals"><br>
+      <sub><strong>Security Signals</strong></sub>
+    </td>
+    <td width="20%" align="center">
+      <img src="assets/gitImages/5.jpg" width="190" alt="SafeHaven developer flow"><br>
+      <sub><strong>Developer Flow</strong></sub>
+    </td>
+  </tr>
+</table>
+
+## Repository structure
+
+| Area | What it contains |
+|---|---|
+| **Android client** | Store browsing, app pages, install flow, and UI. |
+| **Store logic** | Catalog parsing, categories, app metadata, and listing display. |
+| **Developer flow** | App registration, source verification, release upload, and status display. |
+| **server_code** | Backend/store server code for submissions, scanning, storage, and catalog generation. |
+
+## Backend
+
+The backend lives under `server_code`.
+
+It handles the store API, app submissions, repository verification, APK scanning flow, S3-compatible storage, public catalog generation, app images, and admin review tools.
 
 ## Building the app
 
@@ -33,13 +103,20 @@ For an app bundle:
 flutter build appbundle --release
 ```
 
-## Backend
-
-The backend lives under `server_code` and handles the store API, app submissions, APK scanning flow, S3-compatible storage, and the public catalog.
-
 ## Current status
 
-SafeHaven is still early. The client, backend, and review flow may change as the project develops.
+SafeHaven is still early. The Android client, backend, review flow, import system, and scanning pipeline may change as the project develops.
+
+## Project links
+
+<p>
+  <a href="https://github.com/phsycologicalFudge/SafeHaven">
+    <img src="https://img.shields.io/badge/Source%20Code-181717?style=for-the-badge&logo=github&logoColor=white" alt="Source Code">
+  </a>
+  <a href="https://discord.gg/VYubQJfcYM">
+    <img src="https://img.shields.io/badge/Community-Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord">
+  </a>
+</p>
 
 ## Licence
 
