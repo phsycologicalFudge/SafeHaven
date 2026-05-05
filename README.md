@@ -34,12 +34,6 @@ SafeHaven is an Android app distribution platform built around transparency. Ins
 | **APK scanning** | Submitted APKs are scanned before being approved. |
 | **Rechecks** | Apps can be rescanned after release to keep metadata fresh. |
 
-## App submissions
-
-Developers can register an app, link it to a repository, verify ownership, upload releases, and manage store metadata. SafeHaven checks the submitted APK through its [scan pipeline](https://github.com/phsycologicalFudge/sub_modules) before it becomes available in the public catalog.
-
-Community/imported listings are kept separate from verified developer listings. They can help users discover open-source/open code Android apps, while still showing that the listing has not been claimed by the original developer.
-
 ## Screenshots
 
 <table>
@@ -63,20 +57,20 @@ Community/imported listings are kept separate from verified developer listings. 
   </tr>
 </table>
 
+## App submissions
+
+- Developers can register and manage their apps. SafeHaven checks submitted APKs through its scan pipeline before they become available in the public catalog.
+- Community/imported listings are kept separate from verified developer listings.
+
+Want to suggest an app? Use the [App Suggestions discussion](https://github.com/phsycologicalFudge/SafeHaven/discussions/categories/app-suggestions).
+
 ## Repository structure
 
 | Area | What it contains |
 |---|---|
 | **Android client** | Store browsing, app pages, install flow, and UI. |
 | **Store logic** | Catalog parsing, categories, app metadata, and listing display. |
-| **Developer flow** | App registration, source verification, release upload, and status display. |
 | **server_code** | Backend/store server code for submissions, scanning, storage, and catalog generation. |
-
-## Backend
-
-The backend lives under `server_code`.
-
-It handles the store API, app submissions, repository verification, APK scanning flow, S3-compatible storage, public catalog generation, app images, and admin review tools.
 
 ## Building the app
 
