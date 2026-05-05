@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../services/index_service.dart';
 import '../../services/store_service.dart';
+import '../../services/theme/theme_manager.dart';
 
 class DeveloperAccountScreen extends StatefulWidget {
   const DeveloperAccountScreen({super.key});
@@ -32,7 +33,7 @@ class _DeveloperAccountScreenState extends State<DeveloperAccountScreen> {
   void initState() {
     super.initState();
     _listenForAuthLinks();
-    _load();
+    _load(showLoading: true);
   }
 
   @override
@@ -43,27 +44,53 @@ class _DeveloperAccountScreenState extends State<DeveloperAccountScreen> {
 
   void _listenForAuthLinks() {
     _linkSub = _appLinks.uriLinkStream.listen(
-          (uri) async {
+      (uri) async {
         if (uri.scheme != 'safehaven') return;
         if (uri.host != 'auth') return;
-        setState(() { _loading = true; _error = null; });
+
+        setState(() {
+          _loading = true;
+          _error = null;
+        });
+
         try {
           await _service.saveTokenFromAuthUri(uri);
-          await _load();
+          await _load(showLoading: false);
         } catch (e) {
-          setState(() { _loading = false; _error = e.toString(); });
+          if (!mounted) return;
+          setState(() {
+            _loading = false;
+            _error = e.toString();
+          });
         }
       },
-      onError: (Object e) => setState(() => _error = e.toString()),
+      onError: (Object e) {
+        if (!mounted) return;
+        setState(() => _error = e.toString());
+      },
     );
   }
 
-  Future<void> _load() async {
-    setState(() { _loading = true; _error = null; });
+  Future<void> _load({bool showLoading = false}) async {
+    if (showLoading && mounted) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    } else if (mounted) {
+      setState(() => _error = null);
+    }
+
     try {
       final token = await _service.getToken();
       if (token == null) {
-        setState(() { _account = null; _apps = const []; _loading = false; });
+        if (!mounted) return;
+        setState(() {
+          _account = null;
+          _apps = const [];
+          _publicApps = const {};
+          _loading = false;
+        });
         return;
       }
 
@@ -78,37 +105,60 @@ class _DeveloperAccountScreenState extends State<DeveloperAccountScreen> {
           ? await _service.fetchDeveloperApps()
           : <DeveloperStoreApp>[];
 
+      if (!mounted) return;
       setState(() {
         _account = account;
         _apps = apps;
-        _publicApps = { for (final a in index.apps) a.packageName: a };
+        _publicApps = {for (final app in index.apps) app.packageName: app};
         _loading = false;
       });
     } catch (e) {
-      setState(() { _account = null; _apps = const []; _error = e.toString(); _loading = false; });
+      if (!mounted) return;
+      setState(() {
+        _account = null;
+        _apps = const [];
+        _publicApps = const {};
+        _error = e.toString();
+        _loading = false;
+      });
     }
   }
 
   Future<void> _login() async {
-    setState(() { _openingLogin = true; _error = null; });
+    setState(() {
+      _openingLogin = true;
+      _error = null;
+    });
+
     try {
-      final ok = await launchUrl(_service.loginUri(), mode: LaunchMode.externalApplication);
-      if (!ok) setState(() => _error = 'Could not open login page.');
+      final ok = await launchUrl(
+        _service.loginUri(),
+        mode: LaunchMode.externalApplication,
+      );
+      if (!ok && mounted) {
+        setState(() => _error = 'Could not open login page.');
+      }
     } catch (e) {
-      setState(() => _error = e.toString());
+      if (mounted) setState(() => _error = e.toString());
     } finally {
       if (mounted) setState(() => _openingLogin = false);
     }
   }
 
   Future<void> _openDashboard() async {
-    setState(() { _openingDashboard = true; _error = null; });
+    setState(() {
+      _openingDashboard = true;
+      _error = null;
+    });
+
     try {
       final uri = await _service.dashboardUri();
       final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
-      if (!ok) setState(() => _error = 'Could not open dashboard.');
+      if (!ok && mounted) {
+        setState(() => _error = 'Could not open dashboard.');
+      }
     } catch (e) {
-      setState(() => _error = e.toString());
+      if (mounted) setState(() => _error = e.toString());
     } finally {
       if (mounted) setState(() => _openingDashboard = false);
     }
@@ -116,81 +166,119 @@ class _DeveloperAccountScreenState extends State<DeveloperAccountScreen> {
 
   Future<void> _logout() async {
     await _service.clearToken();
-    setState(() { _account = null; _apps = const []; _error = null; });
+    if (!mounted) return;
+    setState(() {
+      _account = null;
+      _apps = const [];
+      _publicApps = const {};
+      _error = null;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
+    final colors = SafeHavenTheme.of(context);
+
     return Scaffold(
-      backgroundColor: const Color(0xFF08090C),
-      appBar: AppBar(
-        elevation: 0,
-        scrolledUnderElevation: 0,
-        backgroundColor: const Color(0xFF08090C),
-        surfaceTintColor: Colors.transparent,
-        title: const Text(
-          'Account',
-          style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700, letterSpacing: -0.2),
-        ),
-      ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator(color: Colors.white))
-          : RefreshIndicator(
-        onRefresh: _load,
-        child: ListView(
-          physics: const AlwaysScrollableScrollPhysics(),
-          children: [
-            _AccountBlock(
+      backgroundColor: colors.background,
+      body: RefreshIndicator(
+        onRefresh: () => _load(showLoading: false),
+        child: CustomScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: [
+          SliverToBoxAdapter(
+            child: _AccountHeader(
               account: _account,
+              loading: _loading,
               openingLogin: _openingLogin,
               openingDashboard: _openingDashboard,
               onLogin: _login,
               onDashboard: _openDashboard,
               onLogout: _logout,
             ),
-            if (_error != null)
-              Padding(
+          ),
+          if (_error != null)
+            SliverToBoxAdapter(
+              child: Padding(
                 padding: const EdgeInsets.fromLTRB(18, 0, 18, 12),
                 child: Text(
                   _error!,
-                  style: const TextStyle(fontSize: 12.5, color: Color(0xFFFCA5A5)),
+                  style: const TextStyle(
+                    fontSize: 12.5,
+                    color: Color(0xFFE85D75),
+                    height: 1.35,
+                  ),
                 ),
               ),
-            if (_account != null) ...[
-              const _SectionLabel(text: 'Developer apps'),
-              if (!_account!.developerEnabled)
-                const Padding(
-                  padding: EdgeInsets.fromLTRB(18, 0, 18, 16),
-                  child: Text(
-                    'Developer access is not enabled. Open the dashboard to agree to the developer terms.',
-                    style: TextStyle(fontSize: 13, color: Color(0xFF9EA3AD), height: 1.4),
-                  ),
-                )
-              else if (_apps.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.fromLTRB(18, 0, 18, 16),
-                  child: Text(
-                    'No apps registered yet. Open the dashboard to register your first app.',
-                    style: TextStyle(fontSize: 13, color: Color(0xFF9EA3AD), height: 1.4),
-                  ),
-                )
-              else
-                ..._apps.map((app) => _AppEntry(
-                  app: app,
-                  publicApp: _publicApps[app.packageName],
-                )),
-              const SizedBox(height: 28),
-            ],
+            ),
+          if (_loading)
+            const SliverToBoxAdapter(child: _LoadingBlock()),
+          if (!_loading && _account != null) ...[
+            SliverToBoxAdapter(
+              child: _SectionHeader(
+                title: 'Your apps',
+                count: _account!.developerEnabled ? _apps.length : null,
+              ),
+            ),
+            if (!_account!.developerEnabled)
+              SliverToBoxAdapter(
+                child: _MessageBlock(
+                  message:
+                      'Developer access is not enabled. Open the dashboard to agree to the developer terms.',
+                  actionLabel: 'Open dashboard',
+                  onAction: _openDashboard,
+                ),
+              )
+            else if (_apps.isEmpty)
+              SliverToBoxAdapter(
+                child: _MessageBlock(
+                  message:
+                      'No apps registered yet. Open the dashboard to register your first app.',
+                  actionLabel: 'Open dashboard',
+                  onAction: _openDashboard,
+                ),
+              )
+            else
+              SliverList(
+                delegate: SliverChildBuilderDelegate(
+                  (context, index) {
+                    final app = _apps[index];
+                    return _DeveloperAppRow(
+                      app: app,
+                      publicApp: _publicApps[app.packageName],
+                    );
+                  },
+                  childCount: _apps.length,
+                ),
+              ),
           ],
+          if (!_loading && _account == null)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(18, 0, 18, 28),
+                child: Text(
+                  'Sign in to manage developer submissions, review status, signing keys, and dashboard access.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 13.5,
+                    height: 1.45,
+                    color: colors.textMuted,
+                  ),
+                ),
+              ),
+            ),
+          const SliverToBoxAdapter(child: SizedBox(height: 28)),
+        ],
         ),
       ),
     );
   }
 }
 
-class _AccountBlock extends StatelessWidget {
-  const _AccountBlock({
+class _AccountHeader extends StatelessWidget {
+  const _AccountHeader({
     required this.account,
+    required this.loading,
     required this.openingLogin,
     required this.openingDashboard,
     required this.onLogin,
@@ -199,6 +287,7 @@ class _AccountBlock extends StatelessWidget {
   });
 
   final StoreAccount? account;
+  final bool loading;
   final bool openingLogin;
   final bool openingDashboard;
   final VoidCallback onLogin;
@@ -207,165 +296,150 @@ class _AccountBlock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (account == null) {
-      return Padding(
-        padding: const EdgeInsets.fromLTRB(18, 32, 18, 28),
-        child: Column(
-          children: [
-            Container(
-              width: 64,
-              height: 64,
-              decoration: const BoxDecoration(
-                color: Color(0xFF1C2028),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.person_outline_rounded, size: 30, color: Color(0xFF9EA3AD)),
+    final colors = SafeHavenTheme.of(context);
+    final signedIn = account != null;
+    final displayName = account?.displayName.trim() ?? '';
+    final email = account?.email.trim() ?? '';
+    final label = displayName.isNotEmpty
+        ? displayName
+        : email.isNotEmpty
+            ? email
+            : signedIn
+                ? 'Developer account'
+                : 'Developer account';
+    final initial = label.isNotEmpty ? label.substring(0, 1).toUpperCase() : 'S';
+
+    final safeTop = MediaQuery.of(context).padding.top;
+
+    return Padding(
+      padding: EdgeInsets.fromLTRB(18, safeTop + 18, 18, 22),
+      child: Column(
+        children: [
+          Container(
+            width: 68,
+            height: 68,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: colors.iconBackground,
+              shape: BoxShape.circle,
+              border: Border.all(color: colors.border),
             ),
-            const SizedBox(height: 16),
-            const Text(
-              'Not signed in',
-              style: TextStyle(fontSize: 19, fontWeight: FontWeight.w800, letterSpacing: -0.3),
+            child: loading
+                ? SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2.5,
+                      color: colors.accentEnd,
+                    ),
+                  )
+                : Text(
+                    signedIn ? initial : 'S',
+                    style: TextStyle(
+                      fontSize: 27,
+                      fontWeight: FontWeight.w800,
+                      color: colors.text,
+                    ),
+                  ),
+          ),
+          const SizedBox(height: 14),
+          Text(
+            signedIn ? label : 'Not signed in',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 21,
+              fontWeight: FontWeight.w800,
+              letterSpacing: -0.4,
+              color: colors.text,
             ),
-            const SizedBox(height: 6),
-            const Text(
-              'Sign in with your ColourSwift account to manage your developer apps.',
+          ),
+          if (signedIn && email.isNotEmpty && displayName.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              email,
               textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 13, color: Color(0xFF9EA3AD), height: 1.4),
-            ),
-            const SizedBox(height: 22),
-            SizedBox(
-              width: double.infinity,
-              height: 44,
-              child: FilledButton(
-                onPressed: openingLogin ? null : onLogin,
-                style: FilledButton.styleFrom(
-                  backgroundColor: Colors.white,
-                  foregroundColor: Colors.black,
-                  disabledBackgroundColor: const Color(0xFF252A33),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                ),
-                child: Text(openingLogin ? 'Opening...' : 'Sign in with browser'),
-              ),
+              style: TextStyle(fontSize: 13, color: colors.textMuted),
             ),
           ],
-        ),
-      );
-    }
-
-    final label = account!.displayName.isNotEmpty ? account!.displayName : account!.email;
-    final initial = label.substring(0, 1).toUpperCase();
-
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(18, 32, 18, 20),
-          child: Column(
-            children: [
-              Container(
-                width: 64,
-                height: 64,
-                decoration: const BoxDecoration(
-                  color: Color(0xFF1C2028),
-                  shape: BoxShape.circle,
-                ),
-                child: Center(
-                  child: Text(
-                    initial,
-                    style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800),
+          const SizedBox(height: 20),
+          if (signedIn)
+            Row(
+              children: [
+                Expanded(
+                  child: _GradientButton(
+                    label: openingDashboard ? 'Opening...' : 'Dashboard',
+                    onTap: openingDashboard ? null : onDashboard,
                   ),
                 ),
-              ),
-              const SizedBox(height: 14),
-              Text(
-                label,
-                style: const TextStyle(
-                  fontSize: 19,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: -0.3,
-                ),
-              ),
-              if (account!.email.isNotEmpty && account!.displayName.isNotEmpty) ...[
-                const SizedBox(height: 3),
-                Text(
-                  account!.email,
-                  style: const TextStyle(fontSize: 13, color: Color(0xFF9EA3AD)),
-                ),
+                const SizedBox(width: 10),
+                _PlainActionButton(label: 'Sign out', onTap: onLogout),
               ],
-              const SizedBox(height: 20),
-              Row(
-                children: [
-                  Expanded(
-                    child: SizedBox(
-                      height: 42,
-                      child: OutlinedButton.icon(
-                        onPressed: openingDashboard ? null : onDashboard,
-                        icon: const Icon(Icons.open_in_browser_rounded, size: 17),
-                        label: Text(openingDashboard ? 'Opening...' : 'Dashboard'),
-                        style: OutlinedButton.styleFrom(
-                          side: const BorderSide(color: Color(0xFF2A2F38)),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                          textStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  SizedBox(
-                    height: 42,
-                    child: OutlinedButton(
-                      onPressed: onLogout,
-                      style: OutlinedButton.styleFrom(
-                        side: const BorderSide(color: Color(0xFF2A2F38)),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                        textStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-                      ),
-                      child: const Text('Sign out'),
-                    ),
-                  ),
-                ],
+            )
+          else
+            SizedBox(
+              width: double.infinity,
+              child: _GradientButton(
+                label: openingLogin ? 'Opening...' : 'Sign in',
+                onTap: openingLogin ? null : onLogin,
               ),
-            ],
-          ),
-        ),
-        const Divider(color: Color(0xFF1C2028), height: 1),
-        const SizedBox(height: 8),
-      ],
-    );
-  }
-}
-
-class _SectionLabel extends StatelessWidget {
-  const _SectionLabel({required this.text});
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(18, 16, 18, 10),
-      child: Text(
-        text,
-        style: const TextStyle(
-          fontSize: 18,
-          fontWeight: FontWeight.w800,
-          letterSpacing: -0.3,
-        ),
+            ),
+        ],
       ),
     );
   }
 }
 
-class _AppEntry extends StatefulWidget {
-  const _AppEntry({required this.app, required this.publicApp});
+class _SectionHeader extends StatelessWidget {
+  const _SectionHeader({required this.title, this.count});
+
+  final String title;
+  final int? count;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = SafeHavenTheme.of(context);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(18, 10, 18, 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              title,
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+                letterSpacing: -0.3,
+                color: colors.text,
+              ),
+            ),
+          ),
+          if (count != null)
+            Text(
+              '$count',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: colors.textMuted,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DeveloperAppRow extends StatefulWidget {
+  const _DeveloperAppRow({required this.app, required this.publicApp});
 
   final DeveloperStoreApp app;
   final PublicStoreApp? publicApp;
 
   @override
-  State<_AppEntry> createState() => _AppEntryState();
+  State<_DeveloperAppRow> createState() => _DeveloperAppRowState();
 }
 
-class _AppEntryState extends State<_AppEntry> {
+class _DeveloperAppRowState extends State<_DeveloperAppRow> {
   final StoreService _service = StoreService.instance;
 
   bool _expanded = false;
@@ -374,73 +448,145 @@ class _AppEntryState extends State<_AppEntry> {
   DeveloperAppDetail? _detail;
 
   Future<void> _loadDetail() async {
-    setState(() { _loading = true; _error = null; });
+    if (_loading) return;
+
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+
     try {
       final detail = await _service.fetchDeveloperApp(widget.app.id);
-      setState(() { _detail = detail; _loading = false; });
+      if (!mounted) return;
+      setState(() {
+        _detail = detail;
+        _loading = false;
+      });
     } catch (e) {
-      setState(() { _error = e.toString(); _loading = false; });
+      if (!mounted) return;
+      setState(() {
+        _error = e.toString();
+        _loading = false;
+      });
     }
+  }
+
+  void _toggle() {
+    setState(() => _expanded = !_expanded);
+    if (!_expanded || _detail != null) return;
+    _loadDetail();
   }
 
   @override
   Widget build(BuildContext context) {
+    final colors = SafeHavenTheme.of(context);
     final app = widget.app;
-    final pub = widget.publicApp;
+    final publicApp = widget.publicApp;
 
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        ListTile(
-          onTap: () {
-            setState(() => _expanded = !_expanded);
-            if (_expanded && _detail == null) _loadDetail();
-          },
-          leading: _AppIcon(iconUrl: pub?.iconUrl ?? '', size: 42),
-          title: Text(
-            app.name,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+        InkWell(
+          onTap: _toggle,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(18, 12, 18, 12),
+            child: Row(
+              children: [
+                _AppIcon(iconUrl: publicApp?.iconUrl ?? '', size: 52),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        app.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: -0.2,
+                          color: colors.text,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        app.packageName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                          color: colors.textSoft,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        '${app.statusLabel} · ${app.trustLabel}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: colors.textMuted,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(
+                  _expanded
+                      ? Icons.keyboard_arrow_up_rounded
+                      : Icons.keyboard_arrow_down_rounded,
+                  size: 22,
+                  color: colors.textMuted,
+                ),
+              ],
+            ),
           ),
-          subtitle: Text(
-            '${app.packageName} · ${app.statusLabel}',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 12, color: Color(0xFF9EA3AD)),
-          ),
-          trailing: Icon(
-            _expanded ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
-            size: 20,
-            color: const Color(0xFF9EA3AD),
-          ),
-          contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 2),
         ),
-        if (_expanded)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(18, 0, 18, 12),
-            child: _loading
-                ? const LinearProgressIndicator(
-              color: Colors.white,
-              backgroundColor: Color(0xFF1C2028),
-            )
-                : _error != null
-                ? Text(
-              _error!,
-              style: const TextStyle(fontSize: 12.5, color: Color(0xFFFCA5A5)),
-            )
-                : _detail != null
-                ? _AppDetail(app: app, detail: _detail!, publicApp: pub)
-                : const SizedBox.shrink(),
-          ),
-        const Divider(color: Color(0xFF1C2028), height: 1),
+        AnimatedSize(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
+          alignment: Alignment.topCenter,
+          child: !_expanded
+              ? const SizedBox.shrink()
+              : Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 0, 18, 14),
+                  child: _loading
+                      ? LinearProgressIndicator(
+                          minHeight: 2,
+                          color: colors.textMuted,
+                          backgroundColor: colors.border,
+                        )
+                      : _error != null
+                          ? Text(
+                              _error!,
+                              style: const TextStyle(
+                                fontSize: 12.5,
+                                color: Color(0xFFE85D75),
+                                height: 1.35,
+                              ),
+                            )
+                          : _detail != null
+                              ? _DeveloperAppDetail(
+                                  app: app,
+                                  detail: _detail!,
+                                  publicApp: publicApp,
+                                )
+                              : const SizedBox.shrink(),
+                ),
+        ),
+        const SizedBox(height: 2),
       ],
     );
   }
 }
 
-class _AppDetail extends StatelessWidget {
-  const _AppDetail({required this.app, required this.detail, required this.publicApp});
+class _DeveloperAppDetail extends StatelessWidget {
+  const _DeveloperAppDetail({
+    required this.app,
+    required this.detail,
+    required this.publicApp,
+  });
 
   final DeveloperStoreApp app;
   final DeveloperAppDetail detail;
@@ -448,10 +594,12 @@ class _AppDetail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = SafeHavenTheme.of(context);
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _DetailRow(label: 'Repository', value: app.repoUrl.isEmpty ? '—' : app.repoUrl),
+        _DetailRow(label: 'Repository', value: app.repoUrl.isEmpty ? 'None' : app.repoUrl),
         _DetailRow(label: 'Repo verified', value: app.repoVerified ? 'Yes' : 'Not yet'),
         _DetailRow(
           label: 'Signing key',
@@ -464,12 +612,18 @@ class _AppDetail extends StatelessWidget {
           ),
         if (detail.submissions.isNotEmpty) ...[
           const SizedBox(height: 14),
-          const Text(
+          Text(
             'Submissions',
-            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+            style: TextStyle(
+              fontSize: 13.5,
+              fontWeight: FontWeight.w800,
+              color: colors.text,
+            ),
           ),
           const SizedBox(height: 8),
-          ...detail.submissions.map((s) => _SubmissionRow(submission: s)),
+          ...detail.submissions.map((submission) {
+            return _SubmissionRow(submission: submission);
+          }),
         ],
       ],
     );
@@ -483,29 +637,32 @@ class _SubmissionRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final live = submission.status == 'live';
-    final rejected = submission.status == 'rejected';
+    final colors = SafeHavenTheme.of(context);
 
     return Padding(
-      padding: const EdgeInsets.only(bottom: 7),
+      padding: const EdgeInsets.only(bottom: 8),
       child: Row(
         children: [
           Expanded(
             child: Text(
-              submission.versionName.isEmpty ? 'Version' : 'v${submission.versionName}',
-              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+              submission.versionName.isEmpty
+                  ? 'Version ${submission.versionCode}'
+                  : 'v${submission.versionName}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: colors.text,
+              ),
             ),
           ),
           Text(
             submission.statusLabel,
             style: TextStyle(
               fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: live
-                  ? const Color(0xFF86EFAC)
-                  : rejected
-                  ? const Color(0xFFFCA5A5)
-                  : const Color(0xFF9EA3AD),
+              fontWeight: FontWeight.w700,
+              color: colors.textMuted,
             ),
           ),
         ],
@@ -522,25 +679,169 @@ class _DetailRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = SafeHavenTheme.of(context);
+
     return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.only(bottom: 8),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            label,
-            style: const TextStyle(fontSize: 12, color: Color(0xFF9EA3AD)),
+          SizedBox(
+            width: 96,
+            child: Text(
+              label,
+              style: TextStyle(fontSize: 12.5, color: colors.textMuted),
+            ),
           ),
-          const SizedBox(width: 12),
           Expanded(
             child: Text(
               value,
               textAlign: TextAlign.right,
-              style: const TextStyle(fontSize: 12, color: Color(0xFFD5D8DF), height: 1.35),
+              style: TextStyle(
+                fontSize: 12.5,
+                height: 1.35,
+                color: colors.textSoft,
+              ),
             ),
           ),
         ],
       ),
+    );
+  }
+}
+
+class _MessageBlock extends StatelessWidget {
+  const _MessageBlock({
+    required this.message,
+    required this.actionLabel,
+    required this.onAction,
+  });
+
+  final String message;
+  final String actionLabel;
+  final VoidCallback onAction;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = SafeHavenTheme.of(context);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(18, 4, 18, 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            message,
+            style: TextStyle(
+              fontSize: 13,
+              height: 1.4,
+              color: colors.textMuted,
+            ),
+          ),
+          const SizedBox(height: 14),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: _GradientButton(label: actionLabel, onTap: onAction),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _GradientButton extends StatelessWidget {
+  const _GradientButton({required this.label, required this.onTap});
+
+  final String label;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = SafeHavenTheme.of(context);
+    final enabled = onTap != null;
+
+    return SizedBox(
+      height: 44,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: enabled ? colors.accentGradient : null,
+          color: enabled ? null : colors.surfaceSoft,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: enabled ? Colors.transparent : colors.border,
+          ),
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(10),
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 22),
+              child: Center(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                    color: enabled ? colors.buttonText : colors.textMuted,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PlainActionButton extends StatelessWidget {
+  const _PlainActionButton({required this.label, required this.onTap});
+
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = SafeHavenTheme.of(context);
+
+    return SizedBox(
+      height: 44,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Center(
+              child: Text(
+                label,
+                style: TextStyle(
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w700,
+                  color: colors.textSoft,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LoadingBlock extends StatelessWidget {
+  const _LoadingBlock();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = SafeHavenTheme.of(context);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(18, 44, 18, 44),
+      child: Center(child: CircularProgressIndicator(color: colors.accentEnd)),
     );
   }
 }
@@ -553,27 +854,52 @@ class _AppIcon extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = SafeHavenTheme.of(context);
+
     return Container(
       width: size,
       height: size,
       decoration: BoxDecoration(
-        color: const Color(0xFF151820),
+        color: colors.iconBackground,
         borderRadius: BorderRadius.circular(size * 0.22),
-        border: Border.all(color: const Color(0xFF242934)),
+        border: Border.all(color: colors.border),
       ),
       clipBehavior: Clip.antiAlias,
       child: iconUrl.isEmpty
-          ? const Icon(Icons.android_rounded, size: 20, color: Color(0xFF4A4F5A))
+          ? Icon(
+              Icons.android_rounded,
+              size: size * 0.42,
+              color: colors.textMuted,
+            )
           : Image.network(
-        iconUrl,
-        fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) =>
-        const Icon(Icons.android_rounded, size: 20, color: Color(0xFF4A4F5A)),
-        loadingBuilder: (_, child, loadingProgress) {
-          if (loadingProgress == null) return child;
-          return const SizedBox.shrink();
-        },
-      ),
+              iconUrl,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => Icon(
+                Icons.android_rounded,
+                size: size * 0.42,
+                color: colors.textMuted,
+              ),
+              loadingBuilder: (_, child, loadingProgress) {
+                if (loadingProgress == null) return child;
+                return const SizedBox.shrink();
+              },
+            ),
     );
+  }
+}
+
+Color _statusColor(BuildContext context, String status) {
+  final colors = SafeHavenTheme.of(context);
+
+  switch (status) {
+    case 'live':
+    case 'active':
+      return colors.accentEnd;
+    case 'rejected':
+    case 'suspended':
+    case 'removed':
+      return const Color(0xFFE85D75);
+    default:
+      return colors.textMuted;
   }
 }

@@ -3,6 +3,10 @@
 Official APK scanner for the SafeHaven Store. Polls the store API for pending submissions, downloads each APK, checks its hash against a malware database, and posts the result back. Runs as a systemd service on any Linux VPS.
 [Currently only impliments VTTI, may add vx-titanium in the future. This can be swapped for your own]
 
+## Transparency
+
+The scanning module polls from malwarebazaar. However, as a malware researcher, I have a private corpus that is excluded from the repo. This is used in the running build of SafeHaven for better malware detection, along with vx-titanium. 
+
 ## How it works
 
 1. Polls `GET /internal/store/pending-scans` on a configurable interval

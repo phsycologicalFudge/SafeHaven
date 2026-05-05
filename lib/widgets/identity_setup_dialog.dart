@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
-
 import '../services/device_identity_service.dart';
-
+import '../services/theme/theme_manager.dart';
 
 class IdentitySetupDialog extends StatefulWidget {
   const IdentitySetupDialog({super.key});
@@ -43,20 +42,28 @@ class _IdentitySetupDialogState extends State<IdentitySetupDialog> {
       return;
     }
 
-    setState(() { _saving = true; _error = null; });
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
 
     try {
       await DeviceIdentityService.instance.setupIdentity(nickname);
       if (mounted) Navigator.of(context).pop();
     } catch (_) {
-      setState(() { _saving = false; _error = 'Something went wrong.'; });
+      setState(() {
+        _saving = false;
+        _error = 'Something went wrong.';
+      });
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final colors = SafeHavenTheme.of(context);
+
     return Dialog(
-      backgroundColor: const Color(0xFF0F1118),
+      backgroundColor: colors.surface,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(24, 28, 24, 24),
@@ -64,20 +71,21 @@ class _IdentitySetupDialogState extends State<IdentitySetupDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
+            Text(
               'Choose a nickname',
               style: TextStyle(
                 fontSize: 19,
                 fontWeight: FontWeight.w800,
                 letterSpacing: -0.3,
+                color: colors.text,
               ),
             ),
             const SizedBox(height: 8),
-            const Text(
+            Text(
               'This is used for unique ratings. It is not public.',
               style: TextStyle(
                 fontSize: 13,
-                color: Color(0xFF9EA3AD),
+                color: colors.textSoft,
                 height: 1.4,
               ),
             ),
@@ -92,47 +100,59 @@ class _IdentitySetupDialogState extends State<IdentitySetupDialog> {
                 hintText: 'e.g. alex',
                 counterText: '',
                 filled: true,
-                fillColor: const Color(0xFF161A23),
+                fillColor: colors.surfaceSoft,
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(10),
-                  borderSide: const BorderSide(color: Color(0xFF222734)),
+                  borderSide: BorderSide(color: colors.border),
                 ),
                 enabledBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(10),
-                  borderSide: const BorderSide(color: Color(0xFF222734)),
+                  borderSide: BorderSide(color: colors.border),
                 ),
                 focusedBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(10),
-                  borderSide: const BorderSide(color: Color(0xFF4A5568)),
+                  borderSide: BorderSide(color: colors.textSoft),
                 ),
-                hintStyle: const TextStyle(color: Color(0xFF4A4F5A)),
+                hintStyle: TextStyle(color: colors.textMuted),
               ),
-              style: const TextStyle(fontSize: 15, color: Colors.white),
+              style: TextStyle(fontSize: 15, color: colors.text),
             ),
             if (_error != null) ...[
               const SizedBox(height: 8),
               Text(
                 _error!,
-                style: const TextStyle(fontSize: 12.5, color: Color(0xFFFCA5A5)),
+                style: const TextStyle(
+                  fontSize: 12.5,
+                  color: Color(0xFFFCA5A5),
+                ),
               ),
             ],
             const SizedBox(height: 20),
             SizedBox(
               width: double.infinity,
-              height: 44,
-              child: FilledButton(
-                onPressed: _saving ? null : _save,
-                style: FilledButton.styleFrom(
-                  backgroundColor: Colors.white,
-                  foregroundColor: Colors.black,
-                  disabledBackgroundColor: const Color(0xFF1C2028),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
+              height: 46,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: _saving ? null : colors.accentGradient,
+                  color: _saving ? colors.surfaceSoft : null,
+                  borderRadius: BorderRadius.circular(10),
                 ),
-                child: Text(
-                  _saving ? 'Saving...' : 'Continue',
-                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(10),
+                    onTap: _saving ? null : _save,
+                    child: Center(
+                      child: Text(
+                        _saving ? 'Saving...' : 'Continue',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w800,
+                          color: _saving ? colors.textMuted : colors.buttonText,
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
               ),
             ),

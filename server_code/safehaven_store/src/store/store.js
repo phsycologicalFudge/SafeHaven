@@ -108,11 +108,28 @@ const parseScreenshots = (json) => {
   try { return JSON.parse(json); } catch { return []; }
 };
 
+const normalizeStoreText = (value) => {
+  if (value === null || value === undefined) return null;
+
+  const clean = value
+    .toString()
+    .replace(/\\r\\n/g, "\n")
+    .replace(/\\n/g, "\n")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return clean || null;
+};
+
 const buildAppEntry = (env, app) => ({
   packageName:  app.package_name,
   name:         app.name,
-  summary:      app.summary     || null,
-  description:  app.description || null,
+  summary:      normalizeStoreText(app.summary),
+  description:  normalizeStoreText(app.description),
   repoUrl:      app.repo_url,
   trustLevel:   app.trust_level,
   category:     app.category    || null,
@@ -200,8 +217,8 @@ const createUnclaimedStoreApp = async (env, input) => {
   const packageName = (input.packageName || "").toString().trim();
   const name        = (input.name || "").toString().trim();
   const repoUrl     = (input.repoUrl || "").toString().trim();
-  const summary     = (input.summary || "").toString().trim() || null;
-  const description = (input.description || "").toString().trim() || null;
+  const summary     = normalizeStoreText(input.summary);
+  const description = normalizeStoreText(input.description);
   const now         = nowUnix();
   if (!packageName || !name || !repoUrl) return null;
 
@@ -347,6 +364,8 @@ const uploadBufferToStaging = async (env, packageName, versionCode, buffer) => {
 const pollAppRepo = async (env, app) => {
   const gh = parseGitHubRepo(app.repo_url);
   if (!gh) { await setAppLastRepoCheck(env, app.id); return; }
+
+  await refreshGitHubMetadataForApp(env, app, gh.owner, gh.repo);
 
   const release = await githubLatestRelease(gh.owner, gh.repo);
   await setAppLastRepoCheck(env, app.id);
@@ -503,8 +522,8 @@ export async function handleStore(request, env, auth) {
       const packageName = (body.packageName || "").toString().trim();
       const name        = (body.name        || "").toString().trim();
       const repoUrl     = (body.repoUrl     || "").toString().trim();
-      const summary     = (body.summary     || "").toString().trim() || null;
-      const description = (body.description || "").toString().trim() || null;
+      const summary     = normalizeStoreText(body.summary);
+      const description = normalizeStoreText(body.description);
 
       if (!packageName) return badRequest("missing_packageName");
       if (!name)        return badRequest("missing_name");
@@ -986,8 +1005,8 @@ export async function handleStore(request, env, auth) {
       const repoUrl     = (body.repoUrl     || "").toString().trim();
       const name        = (body.name        || "").toString().trim();
       const packageName = (body.packageName || "").toString().trim();
-      const summary     = (body.summary     || "").toString().trim() || null;
-      const description = (body.description || "").toString().trim() || null;
+      const summary     = normalizeStoreText(body.summary);
+      const description = normalizeStoreText(body.description);
       const category    = (body.category    || "").toString().trim() || null;
 
       if (!repoUrl)     return badRequest("repoUrl_required");

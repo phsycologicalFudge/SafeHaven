@@ -341,7 +341,7 @@ class PublicStoreApp {
       case 'verified_source':
         return 'Source ownership has been verified for this listing.';
       default:
-        return 'This listing was not submitted by the original developer.';
+        return 'This listing was submitted by the community, not the original developer.';
     }
   }
 
@@ -354,7 +354,16 @@ class PublicStoreApp {
   String get displayVersion {
     final latest = latestVersion;
     if (latest == null || latest.versionName.isEmpty) return 'No live version';
-    return 'v${latest.versionName}';
+    final name = latest.versionName.replaceFirst(RegExp(r'^v', caseSensitive: false), '');
+    return 'v$name';
+  }
+
+  String get developerName {
+    if (repoUrl.isEmpty) return '';
+    final uri = Uri.tryParse(repoUrl.trim());
+    if (uri == null) return '';
+    final segments = uri.pathSegments.where((s) => s.isNotEmpty).toList();
+    return segments.isNotEmpty ? segments.first : '';
   }
 
   String get displayRating {

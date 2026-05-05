@@ -4,7 +4,7 @@ import '../../services/history_service.dart';
 import '../../services/index_service.dart';
 import '../../services/store_service.dart';
 import '../../services/theme/theme_manager.dart';
-import 'app_screen.dart';
+import 'appScreen/app_screen.dart';
 
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
@@ -48,10 +48,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
     return _HistoryData(viewed: viewed, installed: installed);
   }
 
-  void _reload() {
+  Future<void> _reload() async {
     setState(() {
       _future = _load();
     });
+
+    await _future;
   }
 
   @override
@@ -125,24 +127,18 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
         return RefreshIndicator(
           color: colors.accentEnd,
-          onRefresh: () async => _reload(),
+          onRefresh: _reload,
           child: ListView(
             physics: const AlwaysScrollableScrollPhysics(),
             padding: const EdgeInsets.only(bottom: 18),
             children: [
               if (data.installed.isNotEmpty) ...[
-                _SectionHeader(
-                  title: 'Installed',
-                  count: data.installed.length,
-                ),
+                const _SectionHeader(title: 'Installed'),
                 ...data.installed.map((app) => _AppRow(app: app)),
                 const SizedBox(height: 8),
               ],
               if (data.viewed.isNotEmpty) ...[
-                _SectionHeader(
-                  title: 'Recently viewed',
-                  count: data.viewed.length,
-                ),
+                const _SectionHeader(title: 'Recently viewed'),
                 ...data.viewed.map((app) => _AppRow(app: app)),
               ],
             ],
@@ -161,10 +157,9 @@ class _HistoryData {
 }
 
 class _SectionHeader extends StatelessWidget {
-  const _SectionHeader({required this.title, required this.count});
+  const _SectionHeader({required this.title});
 
   final String title;
-  final int count;
 
   @override
   Widget build(BuildContext context) {
@@ -172,10 +167,14 @@ class _SectionHeader extends StatelessWidget {
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(18, 18, 18, 6),
-      child: Row(
-        children: [
-          Text(
+      child: SizedBox(
+        height: 26,
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: Text(
             title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style: TextStyle(
               fontSize: 18,
               fontWeight: FontWeight.w800,
@@ -183,15 +182,7 @@ class _SectionHeader extends StatelessWidget {
               color: colors.text,
             ),
           ),
-          const SizedBox(width: 8),
-          Text(
-            '$count',
-            style: TextStyle(
-              fontSize: 14,
-              color: colors.textMuted,
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -219,10 +210,11 @@ class _AppRow extends StatelessWidget {
             _AppIcon(app: app, size: 52),
             const SizedBox(width: 14),
             Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
+              child: SizedBox(
+                height: 52,
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
                     app.name,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -233,21 +225,8 @@ class _AppRow extends StatelessWidget {
                       color: colors.text,
                     ),
                   ),
-                  const SizedBox(height: 3),
-                  Text(
-                    app.displayVersion,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: colors.textMuted,
-                    ),
-                  ),
-                ],
+                ),
               ),
-            ),
-            Icon(
-              Icons.arrow_forward_ios_rounded,
-              size: 15,
-              color: colors.textMuted,
             ),
           ],
         ),
@@ -278,16 +257,16 @@ class _AppIcon extends StatelessWidget {
       child: app.iconUrl.isEmpty
           ? null
           : Image.network(
-              app.iconUrl,
-              width: size,
-              height: size,
-              fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-              loadingBuilder: (_, child, loadingProgress) {
-                if (loadingProgress == null) return child;
-                return const SizedBox.shrink();
-              },
-            ),
+        app.iconUrl,
+        width: size,
+        height: size,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+        loadingBuilder: (_, child, loadingProgress) {
+          if (loadingProgress == null) return child;
+          return const SizedBox.shrink();
+        },
+      ),
     );
   }
 }

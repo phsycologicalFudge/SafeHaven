@@ -3,7 +3,31 @@ import 'package:flutter/material.dart';
 import '../../services/index_service.dart';
 import '../../services/store_service.dart';
 import '../../services/theme/theme_manager.dart';
-import 'app_screen.dart';
+import 'appScreen/app_screen.dart';
+
+PageRouteBuilder<void> _pushRoute(Widget page) {
+  return PageRouteBuilder<void>(
+    pageBuilder: (_, __, ___) => page,
+    transitionDuration: const Duration(milliseconds: 260),
+    reverseTransitionDuration: const Duration(milliseconds: 210),
+    transitionsBuilder: (_, animation, __, child) {
+      final curved = CurvedAnimation(
+        parent: animation,
+        curve: Curves.easeOutCubic,
+      );
+      return FadeTransition(
+        opacity: curved,
+        child: SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(0, 0.04),
+            end: Offset.zero,
+          ).animate(curved),
+          child: child,
+        ),
+      );
+    },
+  );
+}
 
 class SearchScreen extends StatefulWidget {
   const SearchScreen({super.key});
@@ -13,11 +37,16 @@ class SearchScreen extends StatefulWidget {
 }
 
 class _SearchScreenState extends State<SearchScreen> {
+  static const String _allCategoriesValue = '__all_categories__';
+
   final TextEditingController _searchController = TextEditingController();
   late Future<StoreIndex> _future;
   String _query = '';
   String? _selectedCategory;
   double _minRating = 0;
+
+  bool get _hasActiveSearch =>
+      _query.isNotEmpty || _selectedCategory != null || _minRating > 0;
 
   @override
   void initState() {
@@ -37,6 +66,8 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   List<PublicStoreApp> _filtered(List<PublicStoreApp> apps) {
+    if (!_hasActiveSearch) return const [];
+
     return apps.where((app) {
       final matchesQuery = _query.isEmpty ||
           app.name.toLowerCase().contains(_query) ||
@@ -56,74 +87,99 @@ class _SearchScreenState extends State<SearchScreen> {
   Widget build(BuildContext context) {
     final colors = SafeHavenTheme.of(context);
 
-    return FutureBuilder<StoreIndex>(
-      future: _future,
-      builder: (context, snapshot) {
-        final loading = snapshot.connectionState == ConnectionState.waiting;
-        final index = snapshot.data;
-        final filtered = _filtered(index?.apps ?? []);
-        final categories = index?.categories ?? {};
+    return Scaffold(
+      backgroundColor: colors.background,
+      appBar: AppBar(
+        backgroundColor: colors.background,
+        surfaceTintColor: Colors.transparent,
+        shadowColor: Colors.transparent,
+        leading: IconButton(
+          icon: Icon(Icons.arrow_back_rounded, color: colors.text),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+        title: Text(
+          'Search',
+          style: TextStyle(
+            fontSize: 17,
+            fontWeight: FontWeight.w700,
+            color: colors.text,
+          ),
+        ),
+      ),
+      body: FutureBuilder<StoreIndex>(
+        future: _future,
+        builder: (context, snapshot) {
+          final loading = snapshot.connectionState == ConnectionState.waiting;
+          final index = snapshot.data;
+          final filtered = _filtered(index?.apps ?? []);
+          final categories = index?.categories ?? {};
 
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _SearchBar(controller: _searchController),
-            _FilterRow(
-              categories: categories,
-              selectedCategory: _selectedCategory,
-              minRating: _minRating,
-              onCategoryChanged: (v) => setState(() => _selectedCategory = v),
-              onRatingChanged: (v) => setState(() => _minRating = v),
-            ),
-            Expanded(
-              child: loading
-                  ? Center(
-                      child: CircularProgressIndicator(
-                        color: colors.accentEnd,
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _SearchBar(controller: _searchController),
+              _FilterRow(
+                categories: categories,
+                selectedCategory: _selectedCategory,
+                minRating: _minRating,
+                allCategoriesValue: _allCategoriesValue,
+                onCategoryChanged: (v) {
+                  setState(() {
+                    _selectedCategory =
+                    v == _allCategoriesValue ? null : v;
+                  });
+                },
+                onRatingChanged: (v) => setState(() => _minRating = v),
+              ),
+              Expanded(
+                child: loading
+                    ? Center(
+                  child: CircularProgressIndicator(
+                    color: colors.accentEnd,
+                  ),
+                )
+                    : snapshot.hasError
+                    ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text(
+                      snapshot.error.toString(),
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: colors.textMuted,
                       ),
-                    )
-                  : snapshot.hasError
-                      ? Center(
-                          child: Padding(
-                            padding: const EdgeInsets.all(24),
-                            child: Text(
-                              snapshot.error.toString(),
-                              textAlign: TextAlign.center,
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: colors.textMuted,
-                              ),
-                            ),
-                          ),
-                        )
-                      : filtered.isEmpty
-                          ? Center(
-                              child: Padding(
-                                padding: const EdgeInsets.all(24),
-                                child: Text(
-                                  _query.isEmpty &&
-                                          _selectedCategory == null &&
-                                          _minRating == 0
-                                      ? 'No apps in the store yet.'
-                                      : 'No apps matched your filters.',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 14,
-                                    color: colors.textMuted,
-                                  ),
-                                ),
-                              ),
-                            )
-                          : ListView.builder(
-                              padding: const EdgeInsets.only(top: 4, bottom: 18),
-                              itemCount: filtered.length,
-                              itemBuilder: (context, index) =>
-                                  _AppRow(app: filtered[index]),
-                            ),
-            ),
-          ],
-        );
-      },
+                    ),
+                  ),
+                )
+                    : filtered.isEmpty
+                    ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text(
+                      !_hasActiveSearch
+                          ? 'Search for an app to begin.'
+                          : 'No apps matched your filters.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: colors.textMuted,
+                      ),
+                    ),
+                  ),
+                )
+                    : ListView.builder(
+                  padding:
+                  const EdgeInsets.only(top: 4, bottom: 18),
+                  itemCount: filtered.length,
+                  itemBuilder: (context, index) =>
+                      _AppRow(app: filtered[index]),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
     );
   }
 }
@@ -158,7 +214,7 @@ class _SearchBar extends StatelessWidget {
             Expanded(
               child: TextField(
                 controller: controller,
-                autofocus: false,
+                autofocus: true,
                 decoration: InputDecoration(
                   hintText: 'Search apps',
                   border: InputBorder.none,
@@ -197,6 +253,7 @@ class _FilterRow extends StatelessWidget {
     required this.categories,
     required this.selectedCategory,
     required this.minRating,
+    required this.allCategoriesValue,
     required this.onCategoryChanged,
     required this.onRatingChanged,
   });
@@ -204,27 +261,33 @@ class _FilterRow extends StatelessWidget {
   final Map<String, String> categories;
   final String? selectedCategory;
   final double minRating;
-  final ValueChanged<String?> onCategoryChanged;
+  final String allCategoriesValue;
+  final ValueChanged<String> onCategoryChanged;
   final ValueChanged<double> onRatingChanged;
 
   @override
   Widget build(BuildContext context) {
+    final categoryLabel = selectedCategory == null
+        ? 'All categories'
+        : categories[selectedCategory] ?? 'All categories';
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(18, 0, 18, 12),
       child: Row(
         children: [
           Expanded(
-            child: _FilterDropdown<String?>(
-              value: selectedCategory,
+            child: _FilterMenu<String>(
+              value: selectedCategory ?? allCategoriesValue,
+              label: categoryLabel,
               items: [
-                const DropdownMenuItem<String?>(
-                  value: null,
-                  child: Text('All categories'),
+                _FilterMenuItem(
+                  value: allCategoriesValue,
+                  label: 'All categories',
                 ),
                 ...categories.entries.map(
-                  (e) => DropdownMenuItem<String?>(
+                      (e) => _FilterMenuItem(
                     value: e.key,
-                    child: Text(e.value),
+                    label: e.value,
                   ),
                 ),
               ],
@@ -233,69 +296,164 @@ class _FilterRow extends StatelessWidget {
           ),
           const SizedBox(width: 10),
           Expanded(
-            child: _FilterDropdown<double>(
+            child: _FilterMenu<double>(
               value: minRating,
+              label: _ratingLabel(minRating),
               items: const [
-                DropdownMenuItem(value: 0.0, child: Text('Any rating')),
-                DropdownMenuItem(value: 1.0, child: Text('1★ and up')),
-                DropdownMenuItem(value: 2.0, child: Text('2★ and up')),
-                DropdownMenuItem(value: 3.0, child: Text('3★ and up')),
-                DropdownMenuItem(value: 4.0, child: Text('4★ and up')),
-                DropdownMenuItem(value: 5.0, child: Text('5★ only')),
+                _FilterMenuItem(value: 0.0, label: 'Any rating'),
+                _FilterMenuItem(value: 1.0, label: '1★ and up'),
+                _FilterMenuItem(value: 2.0, label: '2★ and up'),
+                _FilterMenuItem(value: 3.0, label: '3★ and up'),
+                _FilterMenuItem(value: 4.0, label: '4★ and up'),
+                _FilterMenuItem(value: 5.0, label: '5★ only'),
               ],
-              onChanged: (v) => onRatingChanged(v ?? 0),
+              onChanged: onRatingChanged,
             ),
           ),
         ],
       ),
     );
   }
+
+  static String _ratingLabel(double rating) {
+    switch (rating) {
+      case 1.0:
+        return '1★ and up';
+      case 2.0:
+        return '2★ and up';
+      case 3.0:
+        return '3★ and up';
+      case 4.0:
+        return '4★ and up';
+      case 5.0:
+        return '5★ only';
+      default:
+        return 'Any rating';
+    }
+  }
 }
 
-class _FilterDropdown<T> extends StatelessWidget {
-  const _FilterDropdown({
+class _FilterMenu<T> extends StatelessWidget {
+  const _FilterMenu({
     required this.value,
+    required this.label,
     required this.items,
     required this.onChanged,
   });
 
   final T value;
-  final List<DropdownMenuItem<T>> items;
-  final ValueChanged<T?> onChanged;
+  final String label;
+  final List<_FilterMenuItem<T>> items;
+  final ValueChanged<T> onChanged;
 
   @override
   Widget build(BuildContext context) {
     final colors = SafeHavenTheme.of(context);
 
-    return Container(
-      height: 42,
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: BoxDecoration(
-        color: colors.surface,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: colors.border),
+    return PopupMenuButton<T>(
+      initialValue: value,
+      tooltip: '',
+      position: PopupMenuPosition.under,
+      offset: const Offset(0, 8),
+      color: colors.surface,
+      elevation: 3,
+      shadowColor: Colors.black.withOpacity(0.10),
+      surfaceTintColor: Colors.transparent,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: colors.border),
       ),
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton<T>(
-          value: value,
-          isExpanded: true,
-          dropdownColor: colors.surface,
-          style: TextStyle(
-            fontSize: 13,
-            color: colors.textSoft,
-            fontWeight: FontWeight.w600,
-          ),
-          icon: Icon(
-            Icons.expand_more_rounded,
-            size: 20,
-            color: colors.textMuted,
-          ),
-          items: items,
-          onChanged: onChanged,
+      constraints: const BoxConstraints(
+        minWidth: 160,
+        maxWidth: 260,
+      ),
+      itemBuilder: (context) {
+        return items.map((item) {
+          final selected = item.value == value;
+
+          return PopupMenuItem<T>(
+            value: item.value,
+            height: 40,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    item.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: selected ? colors.text : colors.textSoft,
+                      fontWeight:
+                      selected ? FontWeight.w700 : FontWeight.w600,
+                    ),
+                  ),
+                ),
+                if (selected) ...[
+                  const SizedBox(width: 8),
+                  Icon(
+                    Icons.check_rounded,
+                    size: 17,
+                    color: colors.accentEnd,
+                  ),
+                ],
+              ],
+            ),
+          );
+        }).toList();
+      },
+      onSelected: onChanged,
+      child: Container(
+        height: 42,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: colors.surface,
+          borderRadius: BorderRadius.circular(15),
+          border: Border.all(color: colors.border),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.035),
+              blurRadius: 8,
+              offset: const Offset(0, 3),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 13,
+                  color: colors.textSoft,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Icon(
+              Icons.keyboard_arrow_down_rounded,
+              size: 20,
+              color: colors.textMuted,
+            ),
+          ],
         ),
       ),
     );
   }
+}
+
+class _FilterMenuItem<T> {
+  const _FilterMenuItem({
+    required this.value,
+    required this.label,
+  });
+
+  final T value;
+  final String label;
 }
 
 class _AppRow extends StatelessWidget {
@@ -309,9 +467,7 @@ class _AppRow extends StatelessWidget {
 
     return InkWell(
       onTap: () {
-        Navigator.of(context).push(
-          MaterialPageRoute(builder: (_) => AppScreen(app: app)),
-        );
+        Navigator.of(context).push(_pushRoute(AppScreen(app: app)));
       },
       child: Padding(
         padding: const EdgeInsets.fromLTRB(18, 10, 18, 10),
@@ -320,60 +476,38 @@ class _AppRow extends StatelessWidget {
             _AppIcon(app: app, size: 52),
             const SizedBox(width: 14),
             Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    app.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: -0.2,
-                      color: colors.text,
+              child: SizedBox(
+                height: 52,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      app.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: -0.2,
+                        color: colors.text,
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 3),
-                  Text(
-                    app.packageName,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: colors.textMuted,
-                    ),
-                  ),
-                  const SizedBox(height: 3),
-                  Row(
-                    children: [
-                      if (app.ratingCount > 0)
-                        Text(
-                          '${app.displayRating} ★',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: colors.textSoft,
-                          ),
+                    if (app.developerName.isNotEmpty) ...[
+                      const SizedBox(height: 3),
+                      Text(
+                        app.developerName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          color: colors.textMuted,
+                          fontWeight: FontWeight.w600,
                         ),
-                      if (app.ratingCount > 0 && app.category.isNotEmpty)
-                        Text(
-                          ' · ',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: colors.textMuted,
-                          ),
-                        ),
-                      if (app.category.isNotEmpty)
-                        Text(
-                          app.category,
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: colors.textMuted,
-                          ),
-                        ),
+                      ),
                     ],
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ],
@@ -405,16 +539,16 @@ class _AppIcon extends StatelessWidget {
       child: app.iconUrl.isEmpty
           ? null
           : Image.network(
-              app.iconUrl,
-              width: size,
-              height: size,
-              fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-              loadingBuilder: (_, child, loadingProgress) {
-                if (loadingProgress == null) return child;
-                return const SizedBox.shrink();
-              },
-            ),
+        app.iconUrl,
+        width: size,
+        height: size,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+        loadingBuilder: (_, child, loadingProgress) {
+          if (loadingProgress == null) return child;
+          return const SizedBox.shrink();
+        },
+      ),
     );
   }
 }

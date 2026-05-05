@@ -1,5 +1,5 @@
 import { createSubmission, advanceSubmissionToScan } from "../store_db.js";
-import { getPresignedStagingUploadUrl, getPresignedImageUploadUrl, imageKey } from "../storage.js";
+import { getPresignedStagingUploadUrl,getPresignedImageUploadUrl,imageKey,addOrUpdateApp,publicImageUrl,} from "../storage.js";
 
 const COMMUNITY_DEVELOPER_ID = "safehaven-community";
 const IMPORT_LIMIT           = 50;
@@ -35,6 +35,23 @@ const repoUrlVariants = (repoUrl) => {
   if (!normal) return [];
   return [normal, `${normal}/`, `${normal}.git`];
 };
+
+const parseScreenshots = (json) => {
+  if (!json) return [];
+  try { return JSON.parse(json); } catch { return []; }
+};
+
+const buildIndexAppEntry = (env, app) => ({
+  packageName:  app.package_name,
+  name:         app.name,
+  summary:      app.summary     || null,
+  description:  app.description || null,
+  repoUrl:      app.repo_url,
+  trustLevel:   app.trust_level,
+  category:     app.category    || null,
+  iconUrl:      app.icon_key ? publicImageUrl(env, app.icon_key) : null,
+  screenshots:  parseScreenshots(app.screenshots_json).map((k) => publicImageUrl(env, k)),
+});
 
 const githubSearch = async (env, query, perPage = 50) => {
   const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}&sort=stars&order=desc&per_page=${perPage}`;
@@ -109,23 +126,27 @@ const decodeBase64Utf8 = (value) => {
 
 const stripReadmeToDescription = (readme) => {
   const text = (readme || "")
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/!\[[^\]]*]\([^)]*\)/g, " ")
+    .replace(/```[\s\S]*?```/g, "\n\n")
+    .replace(/!\[[^\]]*]\([^)]*\)/g, "")
     .replace(/\[([^\]]+)]\([^)]*\)/g, "$1")
-    .replace(/<img\b[^>]*>/gi, " ")
-    .replace(/<picture\b[\s\S]*?<\/picture>/gi, " ")
-    .replace(/<svg\b[\s\S]*?<\/svg>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
+    .replace(/<picture\b[\s\S]*?<\/picture>/gi, "")
+    .replace(/<svg\b[\s\S]*?<\/svg>/gi, "")
+    .replace(/<img\b[^>]*>/gi, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n\n")
+    .replace(/<[^>]+>/g, "")
     .replace(/^#{1,6}\s*/gm, "")
-    .replace(/^[>\-*+]\s*/gm, "")
+    .replace(/^[>*+-]\s+/gm, "")
     .replace(/\|/g, " ")
-    .replace(/\[(?:!\[.*?)]/g, " ")
-    .replace(/\s+/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 
   if (!text) return null;
 
-  return text.slice(0, 4000);
+  return text.slice(0, 4000).trim();
 };
 
 const githubReadmeDescription = async (env, owner, repo) => {
@@ -140,6 +161,66 @@ const githubReadmeDescription = async (env, owner, repo) => {
   const raw  = decodeBase64Utf8(data.content || "");
 
   return stripReadmeToDescription(raw);
+};
+
+const refreshGitHubMetadataForApp = async (env, app, owner, repo) => {
+  let details = null;
+  let readmeDescription = null;
+
+  try {
+    details = await githubRepoDetails(env, owner, repo);
+  } catch {
+    details = null;
+  }
+
+  try {
+    readmeDescription = await githubReadmeDescription(env, owner, repo);
+  } catch {
+    readmeDescription = null;
+  }
+
+  if (!details && !readmeDescription) return false;
+
+  const summary = (details?.description || app.summary || "").slice(0, 200).trim() || null;
+  const description = readmeDescription || details?.description || app.description || null;
+
+  const category = inferCategory(
+    {
+      fullName: details?.fullName || `${owner}/${repo}`,
+      name: details?.name || app.name,
+      description: details?.description || summary || "",
+      topics: details?.topics || [],
+    },
+    readmeDescription || ""
+  );
+
+  await env.api_control_db
+    .prepare(
+      `UPDATE store_apps
+       SET summary = ?2,
+           description = ?3,
+           category = ?4,
+           updated_at = ?5
+       WHERE id = ?1
+         AND auto_tracked = 1
+         AND claimed = 0`
+    )
+    .bind(
+      app.id,
+      summary,
+      description,
+      category,
+      nowUnix()
+    )
+    .run();
+
+  const updatedApp = await getStoreAppById(env, app.id);
+
+  if (updatedApp) {
+    await addOrUpdateApp(env, buildIndexAppEntry(env, updatedApp));
+  }
+
+  return true;
 };
 
 const parseOpenHubXml = (xml) => {
@@ -366,6 +447,51 @@ const getAppByRepoUrl = async (env, repoUrl) => {
 
   return row || null;
 };
+
+const getAutoTrackedAppsForReadmeSweep = async (env, limit = 50) => {
+  const rows = await env.api_control_db
+    .prepare(
+      `SELECT *
+       FROM store_apps
+       WHERE auto_tracked = 1
+         AND status = 'active'
+         AND repo_url LIKE 'https://github.com/%'
+       ORDER BY updated_at ASC
+       LIMIT ?1`
+    )
+    .bind(limit)
+    .all();
+
+  return rows.results || [];
+};
+
+const updateAutoTrackedAppDescription = async (env, appId, summary, description, category) => {
+  await env.api_control_db
+    .prepare(
+      `UPDATE store_apps
+       SET summary = ?2,
+           description = ?3,
+           category = ?4,
+           updated_at = ?5
+       WHERE id = ?1
+         AND auto_tracked = 1
+         AND claimed = 0`
+    )
+    .bind(
+      (appId || "").toString().trim(),
+      summary || null,
+      description || null,
+      category || "other",
+      nowUnix()
+    )
+    .run();
+};
+
+const getStoreAppById = async (env, appId) =>
+  env.api_control_db
+    .prepare("SELECT * FROM store_apps WHERE id = ?1 LIMIT 1")
+    .bind((appId || "").toString().trim())
+    .first();
 
 const getAppByPackage = (env, packageName) =>
   env.api_control_db
@@ -684,6 +810,86 @@ const collectCandidates = async (env) => {
 
   return candidates;
 };
+
+export async function runGitHubReadmeSweep(env, limit = 50) {
+  const apps = await getAutoTrackedAppsForReadmeSweep(env, limit);
+
+  const results = {
+    checked: 0,
+    updated: 0,
+    skipped: 0,
+    errors: [],
+  };
+
+  for (const app of apps) {
+    results.checked++;
+
+    try {
+      const repoUrl = normalizeGitHubRepoUrl(app.repo_url);
+      const match = repoUrl?.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)$/i);
+
+      if (!match) {
+        results.skipped++;
+        continue;
+      }
+
+      const owner = match[1];
+      const repo = match[2];
+
+      const details = await githubRepoDetails(env, owner, repo);
+      const readmeDescription = await githubReadmeDescription(env, owner, repo);
+
+      if (!details && !readmeDescription) {
+        results.skipped++;
+        continue;
+      }
+
+      const summary = (details?.description || app.summary || "").slice(0, 200).trim() || null;
+      const description = readmeDescription || details?.description || app.description || null;
+      const category = inferCategory(
+        {
+          fullName: details?.fullName || `${owner}/${repo}`,
+          name: details?.name || app.name,
+          description: details?.description || summary || "",
+          topics: details?.topics || [],
+        },
+        readmeDescription || ""
+      );
+
+      await updateAutoTrackedAppDescription(env, app.id, summary, description, category);
+
+      const updatedApp = await getStoreAppById(env, app.id);
+      if (updatedApp) {
+        await addOrUpdateApp(env, buildIndexAppEntry(env, updatedApp));
+      }
+
+      results.updated++;
+
+      console.log(JSON.stringify({
+        tag: "github_readme_sweep_update",
+        appId: app.id,
+        repo: `${owner}/${repo}`,
+        hasReadmeDescription: !!readmeDescription,
+      }));
+    } catch (e) {
+      results.errors.push({
+        appId: app.id,
+        repoUrl: app.repo_url,
+        error: String(e?.message || e),
+      });
+    }
+  }
+
+  console.log(JSON.stringify({
+    tag: "github_readme_sweep_complete",
+    checked: results.checked,
+    updated: results.updated,
+    skipped: results.skipped,
+    errors: results.errors.length,
+  }));
+
+  return results;
+}
 
 export async function runGitHubBootstrapImport(env) {
   const results = {

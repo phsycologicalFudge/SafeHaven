@@ -2,8 +2,34 @@ import 'package:flutter/material.dart';
 import '../../services/theme/theme_manager.dart';
 import '../../services/index_service.dart';
 import '../../services/store_service.dart';
+import '../../services/installer/apk_install_service.dart';
 import '../../widgets/identity_setup_dialog.dart';
-import 'app_screen.dart';
+import 'appScreen/app_screen.dart';
+import 'search_screen.dart';
+
+PageRouteBuilder<void> _pushRoute(Widget page) {
+  return PageRouteBuilder<void>(
+    pageBuilder: (_, __, ___) => page,
+    transitionDuration: const Duration(milliseconds: 260),
+    reverseTransitionDuration: const Duration(milliseconds: 210),
+    transitionsBuilder: (_, animation, __, child) {
+      final curved = CurvedAnimation(
+        parent: animation,
+        curve: Curves.easeOutCubic,
+      );
+      return FadeTransition(
+        opacity: curved,
+        child: SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(0, 0.04),
+            end: Offset.zero,
+          ).animate(curved),
+          child: child,
+        ),
+      );
+    },
+  );
+}
 
 class CatalogueScreen extends StatefulWidget {
   const CatalogueScreen({super.key});
@@ -13,11 +39,11 @@ class CatalogueScreen extends StatefulWidget {
 }
 
 class _CatalogueScreenState extends State<CatalogueScreen> {
-  final TextEditingController _searchController = TextEditingController();
   late Future<StoreIndex> _future;
-  String _query = '';
   String? _selectedCategory;
   List<String> _shuffledCategoryKeys = [];
+  Future<List<PublicStoreApp>>? _recommendedFuture;
+  String? _recommendedKey;
 
   void _loadFuture({bool forceRefresh = false}) {
     _future = IndexService.instance.fetchIndex(forceRefresh: forceRefresh);
@@ -35,27 +61,20 @@ class _CatalogueScreenState extends State<CatalogueScreen> {
   void initState() {
     super.initState();
     _loadFuture();
-    _searchController.addListener(() {
-      setState(() {
-        _query = _searchController.text.trim().toLowerCase();
-      });
-    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       IdentitySetupDialog.showIfNeeded(context);
     });
   }
 
-  @override
-  void dispose() {
-    _searchController.dispose();
-    super.dispose();
-  }
-
-  void _reload() {
+  Future<void> _reload() async {
     setState(() {
       _shuffledCategoryKeys = [];
+      _recommendedFuture = null;
+      _recommendedKey = null;
       _loadFuture(forceRefresh: true);
     });
+
+    await _future;
   }
 
   @override
@@ -67,22 +86,23 @@ class _CatalogueScreenState extends State<CatalogueScreen> {
         final index = snapshot.data;
 
         final allApps = index?.apps ?? const [];
-        final categoryFiltered = IndexService.instance.filterByCategory(
+        final filtered = IndexService.instance.filterByCategory(
           allApps,
           _selectedCategory,
         );
-        final searchFiltered = _applySearch(categoryFiltered);
-        final recommended = IndexService.instance.recommended(searchFiltered);
-        final topCharts = IndexService.instance.topCharts(searchFiltered);
+        final topCharts = IndexService.instance.topCharts(filtered);
+        final Future<List<PublicStoreApp>>? recommendedFuture =
+        filtered.isEmpty ? null : _recommendedFor(filtered, topCharts);
+        final Widget? recommendedSection = recommendedFuture == null
+            ? null
+            : _RecommendedSection(future: recommendedFuture);
 
         return RefreshIndicator(
-          onRefresh: () async => _reload(),
+          onRefresh: _reload,
           child: CustomScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
             slivers: [
-              SliverToBoxAdapter(
-                child: _SearchArea(controller: _searchController),
-              ),
+              const SliverToBoxAdapter(child: _SearchButton()),
               if (index != null && index.categories.isNotEmpty)
                 SliverToBoxAdapter(
                   child: _CategoryTabs(
@@ -105,17 +125,12 @@ class _CatalogueScreenState extends State<CatalogueScreen> {
                     onRetry: _reload,
                   ),
                 ),
-              if (!loading && !snapshot.hasError && searchFiltered.isEmpty)
-                SliverToBoxAdapter(child: _EmptyBlock(query: _query)),
-              if (!loading && !snapshot.hasError && searchFiltered.isNotEmpty)
+              if (!loading && !snapshot.hasError && filtered.isEmpty)
+                const SliverToBoxAdapter(child: _EmptyBlock()),
+              if (!loading && !snapshot.hasError && filtered.isNotEmpty)
                 ...[
-                  if (recommended.isNotEmpty)
-                    SliverToBoxAdapter(
-                      child: _HorizontalSection(
-                        title: 'Recommended for you',
-                        apps: recommended,
-                      ),
-                    ),
+                  if (recommendedSection != null)
+                    SliverToBoxAdapter(child: recommendedSection),
                   if (topCharts.isNotEmpty)
                     SliverToBoxAdapter(
                       child: _HorizontalSection(
@@ -126,7 +141,7 @@ class _CatalogueScreenState extends State<CatalogueScreen> {
                   SliverToBoxAdapter(
                     child: _VerticalSection(
                       title: 'All apps',
-                      apps: searchFiltered,
+                      apps: filtered,
                     ),
                   ),
                 ],
@@ -138,79 +153,80 @@ class _CatalogueScreenState extends State<CatalogueScreen> {
     );
   }
 
-  List<PublicStoreApp> _applySearch(List<PublicStoreApp> apps) {
-    if (_query.isEmpty) return apps;
-    return apps.where((app) {
-      return app.name.toLowerCase().contains(_query) ||
-          app.packageName.toLowerCase().contains(_query) ||
-          app.displaySummary.toLowerCase().contains(_query);
-    }).toList();
+  Future<List<PublicStoreApp>> _recommendedFor(
+      List<PublicStoreApp> apps,
+      List<PublicStoreApp> topCharts,
+      ) {
+    final key = [
+      _selectedCategory ?? '',
+      apps.map((app) => app.packageName).join('|'),
+      topCharts.map((app) => app.packageName).join('|'),
+    ].join('::');
+
+    if (_recommendedKey != key || _recommendedFuture == null) {
+      _recommendedKey = key;
+      _recommendedFuture = IndexService.instance.recommended(
+        apps,
+        exclude: topCharts,
+      );
+    }
+
+    return _recommendedFuture!;
   }
 }
 
-class _SearchArea extends StatelessWidget {
-  const _SearchArea({required this.controller});
-
-  final TextEditingController controller;
+class _SearchButton extends StatelessWidget {
+  const _SearchButton();
 
   @override
   Widget build(BuildContext context) {
     final colors = SafeHavenTheme.of(context);
 
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(18, 4, 18, 12),
-      child: Container(
-        height: 48,
-        decoration: BoxDecoration(
-          color: colors.surface,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: colors.border),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(
-                SafeHavenThemeManager.instance.isDark ? 0.16 : 0.045,
-              ),
-              blurRadius: 18,
-              offset: const Offset(0, 8),
-            ),
-          ],
-        ),
-        child: Row(
-          children: [
-            const SizedBox(width: 14),
-            Icon(
-              Icons.search_rounded,
-              size: 22,
-              color: colors.textMuted,
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: TextField(
-                controller: controller,
-                decoration: InputDecoration(
-                  hintText: 'Search apps',
-                  border: InputBorder.none,
-                  isCollapsed: true,
-                  hintStyle: TextStyle(
-                    fontSize: 15,
-                    color: colors.textMuted,
+    return GestureDetector(
+      onTap: () {
+        Navigator.of(context).push(_pushRoute(const SearchScreen()));
+      },
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(18, 4, 18, 12),
+        child: AbsorbPointer(
+          child: Container(
+            height: 48,
+            decoration: BoxDecoration(
+              color: colors.surface,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: colors.border),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(
+                    SafeHavenThemeManager.instance.isDark ? 0.16 : 0.045,
                   ),
+                  blurRadius: 18,
+                  offset: const Offset(0, 8),
                 ),
-                style: TextStyle(fontSize: 15, color: colors.text),
-              ),
+              ],
             ),
-            if (controller.text.isNotEmpty)
-              IconButton(
-                onPressed: controller.clear,
-                icon: Icon(
-                  Icons.close_rounded,
-                  size: 20,
+            child: Row(
+              children: [
+                const SizedBox(width: 14),
+                Icon(
+                  Icons.search_rounded,
+                  size: 22,
                   color: colors.textMuted,
                 ),
-              )
-            else
-              const SizedBox(width: 14),
-          ],
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'Search apps',
+                    style: TextStyle(
+                      fontSize: 15,
+                      color: colors.textMuted,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 14),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -319,6 +335,28 @@ class _CategoryTabItem extends StatelessWidget {
   }
 }
 
+class _RecommendedSection extends StatelessWidget {
+  const _RecommendedSection({required this.future});
+
+  final Future<List<PublicStoreApp>> future;
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<PublicStoreApp>>(
+      future: future,
+      builder: (context, snapshot) {
+        final apps = snapshot.data ?? const <PublicStoreApp>[];
+        if (apps.isEmpty) return const SizedBox.shrink();
+
+        return _HorizontalSection(
+          title: 'Recommended for you',
+          apps: apps,
+        );
+      },
+    );
+  }
+}
+
 class _HorizontalSection extends StatelessWidget {
   const _HorizontalSection({required this.title, required this.apps});
 
@@ -328,18 +366,18 @@ class _HorizontalSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(top: 18),
+      padding: const EdgeInsets.only(top: 12),
       child: Column(
         children: [
           _SectionHeader(title: title),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
           SizedBox(
-            height: 150,
+            height: 136,
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 18),
               itemCount: apps.length,
-              separatorBuilder: (_, __) => const SizedBox(width: 18),
+              separatorBuilder: (_, __) => const SizedBox(width: 12),
               itemBuilder: (context, index) =>
                   _AppSmallTile(app: apps[index]),
             ),
@@ -359,7 +397,7 @@ class _VerticalSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(top: 18),
+      padding: const EdgeInsets.only(top: 12),
       child: Column(
         children: [
           _SectionHeader(title: title),
@@ -372,38 +410,49 @@ class _VerticalSection extends StatelessWidget {
 }
 
 class _SectionHeader extends StatelessWidget {
-  const _SectionHeader({required this.title});
+  const _SectionHeader({required this.title, this.onTap});
 
   final String title;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     final colors = SafeHavenTheme.of(context);
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 18),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              title,
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w800,
-                letterSpacing: -0.3,
-                color: colors.text,
+    return GestureDetector(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 18),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                title,
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -0.3,
+                  color: colors.text,
+                ),
               ),
             ),
-          ),
-          Icon(
-            Icons.arrow_forward_rounded,
-            size: 20,
-            color: colors.textMuted,
-          ),
-        ],
+            if (onTap != null)
+              Icon(
+                Icons.arrow_forward_rounded,
+                size: 20,
+                color: colors.textSoft,
+              ),
+          ],
+        ),
       ),
     );
   }
+}
+
+String _compactAppName(String name) {
+  final trimmed = name.trim();
+  if (trimmed.length <= 6) return trimmed;
+  return '${trimmed.substring(0, 6)}...';
 }
 
 class _AppSmallTile extends StatelessWidget {
@@ -416,23 +465,21 @@ class _AppSmallTile extends StatelessWidget {
     final colors = SafeHavenTheme.of(context);
 
     return SizedBox(
-      width: 96,
+      width: 74,
       child: InkWell(
         borderRadius: BorderRadius.circular(14),
         onTap: () {
-          Navigator.of(context).push(
-            MaterialPageRoute(builder: (_) => AppScreen(app: app)),
-          );
+          Navigator.of(context).push(_pushRoute(AppScreen(app: app)));
         },
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _AppIcon(app: app, size: 74),
-            const SizedBox(height: 8),
+            _AppIcon(app: app, size: 68),
+            const SizedBox(height: 7),
             Text(
-              app.name,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
+              _compactAppName(app.name),
+              maxLines: 1,
+              overflow: TextOverflow.clip,
               style: TextStyle(
                 fontSize: 12.5,
                 height: 1.15,
@@ -470,12 +517,10 @@ class _AppWideRow extends StatelessWidget {
 
     return InkWell(
       onTap: () {
-        Navigator.of(context).push(
-          MaterialPageRoute(builder: (_) => AppScreen(app: app)),
-        );
+        Navigator.of(context).push(_pushRoute(AppScreen(app: app)));
       },
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(18, 10, 18, 10),
+        padding: const EdgeInsets.fromLTRB(18, 10, 8, 10),
         child: Row(
           children: [
             _AppIcon(app: app, size: 56),
@@ -495,49 +540,206 @@ class _AppWideRow extends StatelessWidget {
                       color: colors.text,
                     ),
                   ),
-                  const SizedBox(height: 3),
-                  Text(
-                    app.packageName,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 12.5,
-                      color: colors.textSoft,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 3),
-                  Row(
-                    children: [
-                      Text(
-                        app.displayVersion,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: colors.textMuted,
-                        ),
+                  if (app.ratingCount > 0) ...[
+                    const SizedBox(height: 3),
+                    Text(
+                      '${app.displayRating} ★',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: colors.textMuted,
                       ),
-                      if (app.ratingCount > 0) ...[
-                        Text(
-                          ' · ',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: colors.textMuted,
-                          ),
-                        ),
-                        Text(
-                          '${app.displayRating} ★',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: colors.textMuted,
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
+                    ),
+                  ],
                 ],
               ),
             ),
+            _DownloadButton(app: app),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+enum _DlState { checking, idle, downloading, cancelling, done }
+
+class _DownloadButton extends StatefulWidget {
+  const _DownloadButton({required this.app});
+
+  final PublicStoreApp app;
+
+  @override
+  State<_DownloadButton> createState() => _DownloadButtonState();
+}
+
+class _DownloadButtonState extends State<_DownloadButton>
+    with WidgetsBindingObserver {
+  _DlState _state = _DlState.checking;
+  double _progress = 0.0;
+  bool _cancelling = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _checkInstalled();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _state == _DlState.done) {
+      Future.delayed(const Duration(milliseconds: 600), _checkInstalled);
+    }
+  }
+
+  Future<void> _checkInstalled() async {
+    if (widget.app.latestVersion == null) return;
+    try {
+      final pkg = await ApkInstallService.instance.getPackageState(
+        packageName: widget.app.packageName,
+      );
+      if (!mounted) return;
+      setState(() {
+        _state = pkg.installed ? _DlState.done : _DlState.idle;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _state = _DlState.idle);
+    }
+  }
+
+  Future<void> _startDownload() async {
+    setState(() {
+      _state = _DlState.downloading;
+      _progress = 0.0;
+      _cancelling = false;
+    });
+    try {
+      await ApkInstallService.instance.downloadAndInstall(
+        app: widget.app,
+        onProgress: (p) {
+          if (!mounted) return;
+          setState(() => _progress = p);
+        },
+      );
+      if (!mounted) return;
+      setState(() => _state = _DlState.done);
+    } catch (_) {
+      if (!mounted) return;
+      if (_cancelling) {
+        await Future.delayed(const Duration(milliseconds: 500));
+        _cancelling = false;
+        if (!mounted) return;
+      }
+      setState(() => _state = _DlState.idle);
+    }
+  }
+
+  Future<void> _cancelDownload() async {
+    if (_state != _DlState.downloading) return;
+    _cancelling = true;
+    setState(() => _state = _DlState.cancelling);
+    await ApkInstallService.instance.cancelDownload();
+  }
+
+  Future<void> _open() async {
+    try {
+      await ApkInstallService.instance.openApp(
+        packageName: widget.app.packageName,
+      );
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = SafeHavenTheme.of(context);
+
+    if (_state == _DlState.checking) {
+      return const SizedBox(width: 44);
+    }
+
+    Widget content;
+    VoidCallback? onTap;
+
+    switch (_state) {
+      case _DlState.idle:
+        content = Icon(
+          Icons.download_rounded,
+          size: 20,
+          color: colors.textMuted,
+        );
+        onTap = _startDownload;
+      case _DlState.downloading:
+        content = SizedBox(
+          width: 22,
+          height: 22,
+          child: CircularProgressIndicator(
+            value: _progress > 0 ? _progress : null,
+            strokeWidth: 1.8,
+            color: colors.text,
+          ),
+        );
+        onTap = _cancelDownload;
+      case _DlState.cancelling:
+        content = SizedBox(
+          width: 22,
+          height: 22,
+          child: Transform.scale(
+            scaleX: -1,
+            child: CircularProgressIndicator(
+              strokeWidth: 1.8,
+              color: colors.textMuted,
+            ),
+          ),
+        );
+        onTap = null;
+      case _DlState.done:
+        content = Text(
+          'Open',
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w700,
+            color: colors.text,
+          ),
+        );
+        onTap = _open;
+      case _DlState.checking:
+        content = const SizedBox.shrink();
+        onTap = null;
+    }
+
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: SizedBox(
+        width: 44,
+        height: 44,
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 280),
+          transitionBuilder: (child, animation) {
+            return FadeTransition(
+              opacity: animation,
+              child: ScaleTransition(
+                scale: Tween<double>(begin: 0.7, end: 1.0).animate(
+                  CurvedAnimation(
+                    parent: animation,
+                    curve: Curves.easeOutBack,
+                  ),
+                ),
+                child: child,
+              ),
+            );
+          },
+          child: Center(
+            key: ValueKey(_state),
+            child: content,
+          ),
         ),
       ),
     );
@@ -585,9 +787,10 @@ class _LoadingBlock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Padding(
-      padding: EdgeInsets.fromLTRB(18, 44, 18, 44),
-      child: Center(child: CircularProgressIndicator(color: Colors.white)),
+    final colors = SafeHavenTheme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(18, 44, 18, 44),
+      child: Center(child: CircularProgressIndicator(color: colors.accentEnd)),
     );
   }
 }
@@ -600,32 +803,66 @@ class _ErrorBlock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = SafeHavenTheme.of(context);
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(18, 44, 18, 44),
       child: Column(
         children: [
-          const Icon(
+          Icon(
             Icons.cloud_off_rounded,
-            color: Color(0xFF9EA3AD),
+            color: colors.textMuted,
             size: 34,
           ),
           const SizedBox(height: 14),
-          const Text(
+          Text(
             'Could not load catalogue',
-            style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+            style: TextStyle(
+              fontSize: 17,
+              fontWeight: FontWeight.w800,
+              color: colors.text,
+            ),
           ),
           const SizedBox(height: 6),
           Text(
             message,
             textAlign: TextAlign.center,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 12.5,
-              color: Color(0xFF9EA3AD),
+              color: colors.textSoft,
               height: 1.35,
             ),
           ),
-          const SizedBox(height: 16),
-          OutlinedButton(onPressed: onRetry, child: const Text('Retry')),
+          const SizedBox(height: 20),
+          SizedBox(
+            height: 42,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: colors.accentGradient,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(10),
+                  onTap: onRetry,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 28),
+                    child: Center(
+                      child: Text(
+                        'Retry',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w800,
+                          color: colors.buttonText,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -633,23 +870,21 @@ class _ErrorBlock extends StatelessWidget {
 }
 
 class _EmptyBlock extends StatelessWidget {
-  const _EmptyBlock({required this.query});
-
-  final String query;
+  const _EmptyBlock();
 
   @override
   Widget build(BuildContext context) {
+    final colors = SafeHavenTheme.of(context);
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(18, 54, 18, 54),
       child: Center(
         child: Text(
-          query.isEmpty
-              ? 'No apps are live yet.'
-              : 'No apps matched your search.',
+          'No apps are live yet.',
           textAlign: TextAlign.center,
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 14,
-            color: Color(0xFF9EA3AD),
+            color: colors.textSoft,
             height: 1.45,
           ),
         ),
