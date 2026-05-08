@@ -72,6 +72,16 @@ Want to suggest an app? Use the [App Suggestions discussion](https://github.com/
 | **Store logic** | Catalog parsing, categories, app metadata, and listing display. |
 | **server_code** | Backend/store server code for submissions, scanning, storage, and catalog generation. |
 
+## APK signature verification
+
+Official Android APKs published by ColourSwift are signed with the following certificate:
+
+SHA-256: `9c67f4224888f60e093cf7eab9b194e6d4cd73bb11313638c47b17f0d5f34ec4`
+
+You can also verify a downloaded APK with the Android SDK Build Tools command:
+
+`apksigner verify --print-certs app-arm64-v8a-release.apk`
+
 ## Building the app
 
 Make sure Flutter is installed, then run:
