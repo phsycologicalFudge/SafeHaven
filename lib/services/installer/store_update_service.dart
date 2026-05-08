@@ -1,0 +1,119 @@
+import '../store_service.dart';
+import 'apk_install_service.dart';
+
+enum StoreUpdateStatus {
+  notInstalled,
+  missingStoreVersion,
+  current,
+  updateAvailable,
+  installedNewerThanStore,
+}
+
+class StoreUpdateCheck {
+  const StoreUpdateCheck({
+    required this.app,
+    required this.installedState,
+    required this.latestVersion,
+    required this.status,
+  });
+
+  final PublicStoreApp app;
+  final InstalledPackageState installedState;
+  final StoreVersion? latestVersion;
+  final StoreUpdateStatus status;
+
+  bool get installed => installedState.installed;
+
+  bool get canUpdate => status == StoreUpdateStatus.updateAvailable;
+
+  bool get isCurrent => status == StoreUpdateStatus.current;
+
+  bool get isInstalledNewerThanStore {
+    return status == StoreUpdateStatus.installedNewerThanStore;
+  }
+
+  int get installedVersionCode => installedState.versionCode;
+
+  String? get installedVersionName => installedState.versionName;
+
+  String? get installedSigningCertificateSha256 {
+    return installedState.signingCertificateSha256;
+  }
+
+  int? get latestVersionCode => latestVersion?.versionCode;
+
+  String? get latestVersionName => latestVersion?.versionName;
+}
+
+class StoreUpdateService {
+  StoreUpdateService._();
+
+  static final StoreUpdateService instance = StoreUpdateService._();
+
+  Future<StoreUpdateCheck> checkApp(PublicStoreApp app) async {
+    final installedState = await ApkInstallService.instance.getPackageState(
+      packageName: app.packageName,
+    );
+
+    final latestVersion = _latestVersionFor(app);
+    final status = _resolveStatus(
+      installedState: installedState,
+      latestVersion: latestVersion,
+    );
+
+    return StoreUpdateCheck(
+      app: app,
+      installedState: installedState,
+      latestVersion: latestVersion,
+      status: status,
+    );
+  }
+
+  Future<List<StoreUpdateCheck>> checkApps(List<PublicStoreApp> apps) async {
+    final checks = <StoreUpdateCheck>[];
+
+    for (final app in apps) {
+      checks.add(await checkApp(app));
+    }
+
+    return checks;
+  }
+
+  Future<List<StoreUpdateCheck>> availableUpdates(
+      List<PublicStoreApp> apps,
+      ) async {
+    final checks = await checkApps(apps);
+    return checks.where((check) => check.canUpdate).toList();
+  }
+
+  StoreVersion? _latestVersionFor(PublicStoreApp app) {
+    final versions = List<StoreVersion>.of(app.versions);
+    if (versions.isEmpty) return null;
+
+    versions.sort((a, b) => b.versionCode.compareTo(a.versionCode));
+    return versions.first;
+  }
+
+  StoreUpdateStatus _resolveStatus({
+    required InstalledPackageState installedState,
+    required StoreVersion? latestVersion,
+  }) {
+    if (!installedState.installed) {
+      return StoreUpdateStatus.notInstalled;
+    }
+
+    if (latestVersion == null) {
+      return StoreUpdateStatus.missingStoreVersion;
+    }
+
+    if (latestVersion.versionCode > installedState.versionCode) {
+      return StoreUpdateStatus.updateAvailable;
+    }
+
+    if (latestVersion.versionCode == installedState.versionCode) {
+      return StoreUpdateStatus.current;
+    }
+
+    return StoreUpdateStatus.installedNewerThanStore;
+  }
+}

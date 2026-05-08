@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../services/index_service.dart';
 import '../../services/store_service.dart';
 import '../../services/theme/theme_manager.dart';
+import '../../widgets/animated_tap.dart';
 import 'appScreen/app_screen.dart';
 
 PageRouteBuilder<void> _pushRoute(Widget page) {
@@ -465,15 +466,16 @@ class _AppRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = SafeHavenTheme.of(context);
 
-    return InkWell(
+    return AnimatedTap(
+      borderRadius: 18,
       onTap: () {
         Navigator.of(context).push(_pushRoute(AppScreen(app: app)));
       },
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(18, 10, 18, 10),
+        padding: const EdgeInsets.fromLTRB(18, 12, 10, 12),
         child: Row(
           children: [
-            _AppIcon(app: app, size: 52),
+            _AppIcon(app: app, size: 66),
             const SizedBox(width: 14),
             Expanded(
               child: SizedBox(
@@ -526,28 +528,47 @@ class _AppIcon extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = SafeHavenTheme.of(context);
+    final iconUrl = app.iconUrl;
 
-    return Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        color: colors.iconBackground,
-        borderRadius: BorderRadius.circular(size * 0.22),
-        border: Border.all(color: colors.border),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: app.iconUrl.isEmpty
-          ? null
-          : Image.network(
-        app.iconUrl,
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(size * 0.22),
+      child: SizedBox(
         width: size,
         height: size,
-        fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-        loadingBuilder: (_, child, loadingProgress) {
-          if (loadingProgress == null) return child;
-          return const SizedBox.shrink();
-        },
+        child: iconUrl == null
+            ? Container(
+          color: colors.surfaceSoft,
+          child: Icon(
+            Icons.apps_rounded,
+            size: size * 0.48,
+            color: colors.textMuted,
+          ),
+        )
+            : Image.network(
+          iconUrl,
+          width: size,
+          height: size,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => Container(
+            color: colors.surfaceSoft,
+            child: Icon(
+              Icons.apps_rounded,
+              size: size * 0.48,
+              color: colors.textMuted,
+            ),
+          ),
+          loadingBuilder: (_, child, loadingProgress) {
+            if (loadingProgress == null) return child;
+            return Container(
+              color: colors.surfaceSoft,
+              child: Icon(
+                Icons.apps_rounded,
+                size: size * 0.48,
+                color: colors.textMuted,
+              ),
+            );
+          },
+        ),
       ),
     );
   }

@@ -1,12 +1,39 @@
-import { createSubmission, advanceSubmissionToScan } from "../store_db.js";
+import { createSubmission, advanceSubmissionToScan, setAppImages } from "../store_db.js";
 import { getPresignedStagingUploadUrl,getPresignedImageUploadUrl,imageKey,addOrUpdateApp,publicImageUrl,} from "../storage.js";
 
 const COMMUNITY_DEVELOPER_ID = "safehaven-community";
 const IMPORT_LIMIT           = 50;
 const MAX_APK_BYTES          = 100 * 1024 * 1024;
-const MAX_ICON_BYTES         = 2 * 1024 * 1024;
+const ADMIN_MAX_APK_BYTES    = 200 * 1024 * 1024;
+const MAX_ICON_BYTES         = 4 * 1024 * 1024;
+const MAX_SCREENSHOT_BYTES   = 4 * 1024 * 1024;
 
 const nowUnix = () => Math.floor(Date.now() / 1000);
+
+const normalizeStoreText = (value) => {
+  if (value === null || value === undefined) return null;
+
+  const clean = value
+    .toString()
+    .replace(/\\r\\n/g, "\n")
+    .replace(/\\n/g, "\n")
+    .replace(/\\t/g, " ")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/gi, "\"")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return clean || null;
+};
 
 const cryptoRandomHex = (bytes) => {
   const a = new Uint8Array(bytes);
@@ -44,8 +71,8 @@ const parseScreenshots = (json) => {
 const buildIndexAppEntry = (env, app) => ({
   packageName:  app.package_name,
   name:         app.name,
-  summary:      app.summary     || null,
-  description:  app.description || null,
+  summary:      normalizeStoreText(app.summary),
+  description:  normalizeStoreText(app.description),
   repoUrl:      app.repo_url,
   trustLevel:   app.trust_level,
   category:     app.category    || null,
@@ -125,19 +152,93 @@ const decodeBase64Utf8 = (value) => {
 };
 
 const stripReadmeToDescription = (readme) => {
-  const text = (readme || "")
+  let text = (readme || "")
+    .toString()
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n");
+
+  text = text
     .replace(/```[\s\S]*?```/g, "\n\n")
-    .replace(/!\[[^\]]*]\([^)]*\)/g, "")
-    .replace(/\[([^\]]+)]\([^)]*\)/g, "$1")
-    .replace(/<picture\b[\s\S]*?<\/picture>/gi, "")
-    .replace(/<svg\b[\s\S]*?<\/svg>/gi, "")
-    .replace(/<img\b[^>]*>/gi, "")
-    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<picture\b[\s\S]*?<\/picture>/gi, "\n\n")
+    .replace(/<svg\b[\s\S]*?<\/svg>/gi, "\n\n")
+    .replace(/<table\b[\s\S]*?<\/table>/gi, "\n\n")
+    .replace(/<!--[\s\S]*?-->/g, "\n\n")
+
+    .replace(/^\s*\[!\[[^\]]*]\([^)]*\)]\([^)]*\)\s*$/gm, "\n")
+    .replace(/^\s*!\[[^\]]*]\([^)]*\)\s*$/gm, "\n")
+    .replace(/^\s*\[<img\b[\s\S]*?>]\([^)]*\)\s*$/gim, "\n")
+    .replace(/^\s*<a\b[^>]*>\s*<img\b[\s\S]*?<\/a>\s*$/gim, "\n")
+    .replace(/^\s*<img\b[^>]*>\s*$/gim, "\n")
+
+    .replace(/<p\b[^>]*align=["']center["'][^>]*>[\s\S]*?<\/p>/gi, (block) => {
+      const withoutImgs = block
+        .replace(/<img\b[^>]*>/gi, "")
+        .replace(/<a\b[^>]*href=["']#[^"']+["'][^>]*>[\s\S]*?<\/a>/gi, "");
+
+      const plain = withoutImgs.replace(/<[^>]+>/g, "").trim();
+
+      if (!plain) return "\n\n";
+      if (plain.includes("•") || plain.includes("&bull;")) return "\n\n";
+      if (plain.length > 180) return "\n\n";
+
+      return `\n\n${plain}\n\n`;
+    })
+
+    .replace(/<h[1-6]\b[^>]*>/gi, "\n\n")
+    .replace(/<\/h[1-6]>/gi, "\n\n")
+    .replace(/<p\b[^>]*>/gi, "\n\n")
     .replace(/<\/p>/gi, "\n\n")
+    .replace(/<div\b[^>]*>/gi, "\n\n")
+    .replace(/<\/div>/gi, "\n\n")
+    .replace(/<section\b[^>]*>/gi, "\n\n")
+    .replace(/<\/section>/gi, "\n\n")
+    .replace(/<hr\s*\/?>/gi, "\n\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<ul\b[^>]*>/gi, "\n")
+    .replace(/<\/ul>/gi, "\n")
+    .replace(/<ol\b[^>]*>/gi, "\n")
+    .replace(/<\/ol>/gi, "\n")
+    .replace(/<li\b[^>]*>/gi, "- ")
+    .replace(/<\/li>/gi, "\n")
+
+    .replace(/^\s*#{1,6}\s+(.+?)\s*#*\s*$/gm, "\n\n$1\n\n")
+
+    .replace(/^\s*>\s*\[!(?:note|tip|important|warning|caution)]\s*$/gim, "\n")
+    .replace(/^\s*>\s?/gm, "")
+
+    .replace(/^\s*[-*+]\s+/gm, "- ")
+    .replace(/^\s*\d+\.\s+/gm, (match) => match.trim() + " ")
+
+    .replace(/\[([^\]]*)]\(([^)]*)\)/g, (full, label, url) => {
+      const cleanLabel = (label || "").trim();
+      const cleanUrl = (url || "").trim();
+
+      if (!cleanLabel && cleanUrl) return cleanUrl;
+      if (!cleanLabel) return "";
+      return cleanLabel;
+    })
+
+    .replace(/<code\b[^>]*>([\s\S]*?)<\/code>/gi, "`$1`")
+    .replace(/<b\b[^>]*>([\s\S]*?)<\/b>/gi, "**$1**")
+    .replace(/<strong\b[^>]*>([\s\S]*?)<\/strong>/gi, "**$1**")
+    .replace(/<i\b[^>]*>([\s\S]*?)<\/i>/gi, "$1")
+    .replace(/<em\b[^>]*>([\s\S]*?)<\/em>/gi, "$1")
     .replace(/<[^>]+>/g, "")
-    .replace(/^#{1,6}\s*/gm, "")
-    .replace(/^[>*+-]\s+/gm, "")
-    .replace(/\|/g, " ")
+
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&bull;/gi, "•")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/gi, "\"")
+
+    .replace(/\*\*([^*\n]+)\*\*/g, "$1")
+    .replace(/__([^_\n]+)__/g, "$1")
+    .replace(/\*([^*\n]+)\*/g, "$1")
+    .replace(/_([^_\n]+)_/g, "$1")
+    .replace(/`([^`\n]+)`/g, "$1")
+
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n[ \t]+/g, "\n")
     .replace(/[ \t]{2,}/g, " ")
@@ -149,7 +250,7 @@ const stripReadmeToDescription = (readme) => {
   return text.slice(0, 4000).trim();
 };
 
-const githubReadmeDescription = async (env, owner, repo) => {
+const githubReadmeRaw = async (env, owner, repo) => {
   const res = await fetch(
     `https://api.github.com/repos/${owner}/${repo}/readme`,
     { headers: githubHeaders(env) }
@@ -160,11 +261,260 @@ const githubReadmeDescription = async (env, owner, repo) => {
   const data = await res.json();
   const raw  = decodeBase64Utf8(data.content || "");
 
+  return raw || null;
+};
+
+const githubReadmeDescription = async (env, owner, repo) => {
+  const raw = await githubReadmeRaw(env, owner, repo);
+  if (!raw) return null;
+
   return stripReadmeToDescription(raw);
+};
+
+const htmlAttrValue = (tag, attr) => {
+  const re = new RegExp(`${attr}\\s*=\\s*["']([^"']+)["']`, "i");
+  return (tag.match(re) || [])[1] || "";
+};
+
+const isLikelyScreenshotImage = (label, src) => {
+  const cleanSrc = (src || "").toString();
+  const text = `${label || ""} ${cleanSrc}`.toLowerCase();
+
+  if (!/\.(png|jpe?g|webp)(?:[?#].*)?$/i.test(cleanSrc)) return false;
+
+  const hardRejectTerms = [
+    "shields.io",
+    "badgen.net",
+    "coveralls",
+    "codecov",
+    "badge",
+    "license",
+    "version",
+    "stars",
+    "downloads",
+    "workflow",
+    "build",
+    "ci",
+    "status",
+  ];
+
+  if (hardRejectTerms.some((term) => text.includes(term))) return false;
+
+  let score = 0;
+
+  const strongTerms = [
+    "screenshot",
+    "screenshots",
+    "phone_screenshots",
+    "phonescreenshots",
+    "phone-screenshots",
+    "preview",
+    "demo",
+    "showcase",
+    "mockup",
+    "screen",
+    "screens",
+    "fastlane",
+    "metadata/android",
+    "play/listings",
+    "store-listing",
+    "store_listing",
+  ];
+
+  const weakTerms = [
+    "image",
+    "images",
+    "img",
+    "gallery",
+    "media",
+    "assets",
+    "docs",
+    "readme",
+  ];
+
+  const rejectTerms = [
+    "logo",
+    "icon",
+    "avatar",
+    "banner",
+    "header",
+    "brand",
+    "qr",
+    "donate",
+    "sponsor",
+  ];
+
+  for (const term of strongTerms) {
+    if (text.includes(term)) score += 4;
+  }
+
+  for (const term of weakTerms) {
+    if (text.includes(term)) score += 1;
+  }
+
+  for (const term of rejectTerms) {
+    if (text.includes(term)) score -= 4;
+  }
+
+  if (/\/(?:screenshots?|previews?|demo|showcase|gallery)\//i.test(cleanSrc)) score += 5;
+  if (/\/fastlane\/metadata\/android\//i.test(cleanSrc)) score += 5;
+  if (/\/images\/(?:phoneScreenshots|sevenInchScreenshots|tenInchScreenshots)\//i.test(cleanSrc)) score += 5;
+  if (/(?:^|\/)(?:image|img|screenshot|screen)[-_]?\d*\.(?:png|jpe?g|webp)(?:[?#].*)?$/i.test(cleanSrc)) score += 2;
+
+  return score >= 4;
+};
+
+const normalizeReadmeImageUrl = (owner, repo, src) => {
+  const clean = (src || "").toString().trim();
+
+  if (!clean) return null;
+  if (clean.startsWith("#")) return null;
+  if (clean.startsWith("data:")) return null;
+  if (clean.startsWith("mailto:")) return null;
+
+  const noQuery = clean.split("#")[0];
+
+  if (/^https?:\/\//i.test(noQuery)) {
+    const blob = noQuery.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\/([^/]+)\/(.+)$/i);
+    if (blob) {
+      return `https://raw.githubusercontent.com/${blob[1]}/${blob[2]}/${blob[3]}/${blob[4].split("?")[0]}`;
+    }
+
+    const rawBlob = noQuery.match(/^https:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/([^/]+)\/(.+)$/i);
+    if (rawBlob) return noQuery;
+
+    const userAsset = noQuery.match(/^https:\/\/github\.com\/user-attachments\/assets\/[^?#]+/i);
+    if (userAsset) return noQuery;
+
+    return noQuery;
+  }
+
+  const withoutPrefix = noQuery
+    .replace(/^\.\//, "")
+    .replace(/^\/+/, "")
+    .split("?")[0];
+
+  if (!withoutPrefix) return null;
+
+  return `https://raw.githubusercontent.com/${owner}/${repo}/HEAD/${withoutPrefix}`;
+};
+
+const readmeScreenshotUrls = (owner, repo, rawReadme) => {
+  const readme = rawReadme || "";
+  const found = [];
+
+  const add = (label, src) => {
+    const url = normalizeReadmeImageUrl(owner, repo, src);
+    if (!url) return;
+    if (!isLikelyScreenshotImage(label, url)) return;
+    if (found.some((item) => item.url === url)) return;
+
+    found.push({ label, url });
+  };
+
+  for (const match of readme.matchAll(/!\[([^\]]*)]\(([^)\n]+?)(?:\s+["'][^"']*["'])?\)/g)) {
+    add(match[1] || "", match[2] || "");
+  }
+
+  for (const match of readme.matchAll(/<img\b[^>]*>/gi)) {
+    const tag = match[0] || "";
+    const src = htmlAttrValue(tag, "src");
+    const label = [
+      htmlAttrValue(tag, "alt"),
+      htmlAttrValue(tag, "title"),
+      htmlAttrValue(tag, "class"),
+      htmlAttrValue(tag, "id"),
+    ].filter(Boolean).join(" ");
+
+    add(label, src);
+  }
+
+  for (const match of readme.matchAll(/src=["']([^"']+\.(?:png|jpe?g|webp)(?:[?#][^"']*)?)["']/gi)) {
+    add("", match[1] || "");
+  }
+
+  return found.slice(0, 6);
+};
+
+const uploadReadmeScreenshot = async (env, packageName, slot, imageUrl) => {
+  let res;
+
+  try {
+    res = await fetch(imageUrl, {
+      headers: { "user-agent": "SafeHaven-Store/1.0" },
+    });
+  } catch {
+    return null;
+  }
+
+  if (!res.ok) return null;
+
+  const contentType = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+
+  const extensionType =
+    /\.png(?:[?#].*)?$/i.test(imageUrl) ? "image/png" :
+    /\.jpe?g(?:[?#].*)?$/i.test(imageUrl) ? "image/jpeg" :
+    /\.webp(?:[?#].*)?$/i.test(imageUrl) ? "image/webp" :
+    null;
+
+  const finalContentType = ["image/png", "image/jpeg", "image/webp"].includes(contentType)
+    ? contentType
+    : extensionType;
+
+  if (!finalContentType) return null;
+
+  const buffer = await res.arrayBuffer();
+  if (!buffer.byteLength || buffer.byteLength > MAX_SCREENSHOT_BYTES) return null;
+
+  const url = await getPresignedImageUploadUrl(env, packageName, slot, 300);
+
+  const uploadRes = await fetch(url, {
+    method:  "PUT",
+    headers: { "content-type": finalContentType },
+    body:    buffer,
+  });
+
+  if (!uploadRes.ok) return null;
+
+  return imageKey(packageName, slot);
+};
+
+const saveReadmeScreenshotsIfMissing = async (env, app, owner, repo, rawReadme) => {
+  if (!app) return [];
+  if (app.developer_id !== COMMUNITY_DEVELOPER_ID) return [];
+  if (Number(app.auto_tracked || 0) !== 1) return [];
+  if (Number(app.claimed || 0) === 1) return [];
+
+  const existingScreenshots = parseScreenshots(app.screenshots_json);
+  if (existingScreenshots.length > 0) return existingScreenshots;
+
+  const candidates = readmeScreenshotUrls(owner, repo, rawReadme);
+  if (!candidates.length) return [];
+
+  const screenshotKeys = [];
+
+  for (let i = 0; i < candidates.length && screenshotKeys.length < 6; i++) {
+    const slot = `screenshot_${screenshotKeys.length + 1}`;
+    const key = await uploadReadmeScreenshot(env, app.package_name, slot, candidates[i].url);
+
+    if (key) {
+      screenshotKeys.push(key);
+    }
+  }
+
+  if (!screenshotKeys.length) return [];
+
+  await setAppImages(env, app.id, {
+    iconKey: app.icon_key || null,
+    screenshotKeys,
+  });
+
+  return screenshotKeys;
 };
 
 const refreshGitHubMetadataForApp = async (env, app, owner, repo) => {
   let details = null;
+  let rawReadme = null;
   let readmeDescription = null;
 
   try {
@@ -174,15 +524,17 @@ const refreshGitHubMetadataForApp = async (env, app, owner, repo) => {
   }
 
   try {
-    readmeDescription = await githubReadmeDescription(env, owner, repo);
+    rawReadme = await githubReadmeRaw(env, owner, repo);
+    readmeDescription = rawReadme ? stripReadmeToDescription(rawReadme) : null;
   } catch {
+    rawReadme = null;
     readmeDescription = null;
   }
 
   if (!details && !readmeDescription) return false;
 
-  const summary = (details?.description || app.summary || "").slice(0, 200).trim() || null;
-  const description = readmeDescription || details?.description || app.description || null;
+  const summary = normalizeStoreText((details?.description || app.summary || "").slice(0, 200).trim()) || null;
+  const description = normalizeStoreText(readmeDescription || details?.description || app.description || null);
 
   const category = inferCategory(
     {
@@ -214,7 +566,12 @@ const refreshGitHubMetadataForApp = async (env, app, owner, repo) => {
     )
     .run();
 
-  const updatedApp = await getStoreAppById(env, app.id);
+  let updatedApp = await getStoreAppById(env, app.id);
+
+  if (updatedApp && rawReadme) {
+    await saveReadmeScreenshotsIfMissing(env, updatedApp, owner, repo, rawReadme);
+    updatedApp = await getStoreAppById(env, app.id);
+  }
 
   if (updatedApp) {
     await addOrUpdateApp(env, buildIndexAppEntry(env, updatedApp));
@@ -270,10 +627,52 @@ const openHubSearch = async (env, query, page = 1) => {
   return parseOpenHubXml(xml);
 };
 
-const findApkAsset = (release) =>
-  (release?.assets || []).find(
-    (a) => a.name.endsWith(".apk") && a.state === "uploaded" && a.browser_download_url
-  ) || null;
+const normalizeAssetText = (value) =>
+  (value || "")
+    .toString()
+    .trim()
+    .toLowerCase();
+
+const apkAssetsOf = (release) =>
+  (release?.assets || []).filter((asset) =>
+    asset?.name?.toLowerCase().endsWith(".apk") &&
+    asset.state === "uploaded" &&
+    asset.browser_download_url
+  );
+
+const findApkAsset = (release, options = {}) => {
+  const assets = apkAssetsOf(release);
+  if (!assets.length) return null;
+
+  const assetMatch = normalizeAssetText(options.assetMatch);
+  const preferredAbi = normalizeAssetText(options.preferredAbi || "arm64-v8a");
+
+  if (assetMatch) {
+    const exactMatch = assets.find((asset) =>
+      normalizeAssetText(asset.name) === assetMatch
+    );
+
+    if (exactMatch) return exactMatch;
+
+    const partialMatches = assets.filter((asset) =>
+      normalizeAssetText(asset.name).includes(assetMatch)
+    );
+
+    if (partialMatches.length) {
+      return findApkAsset({ assets: partialMatches }, { preferredAbi });
+    }
+
+    return null;
+  }
+
+  return (
+    assets.find((asset) => normalizeAssetText(asset.name).includes(preferredAbi)) ||
+    assets.find((asset) => normalizeAssetText(asset.name).includes("arm64")) ||
+    assets.find((asset) => normalizeAssetText(asset.name).includes("universal")) ||
+    assets[0] ||
+    null
+  );
+};
 
 const tagToVersionCode = (tag) => {
   const clean = (tag || "")
@@ -304,6 +703,44 @@ const tagToVersionCode = (tag) => {
   if (major > 9999 || minor > 999 || patch > 999 || build > 99) return null;
 
   return major * 100000000 + minor * 100000 + patch * 100 + build;
+};
+
+const assetNameToVersionName = (assetName) => {
+  const name = (assetName || "").toString().trim();
+
+  const versionMatch = name.match(/(?:^|[-_])v(\d+(?:[._]\d+){1,5}(?:[+._-][a-z0-9.]+)?)(?=\.apk$|[-_])/i);
+  if (!versionMatch) return null;
+
+  return `v${versionMatch[1].replace(/_/g, ".")}`;
+};
+
+const versionNameToVersionCode = (versionName) => {
+  const clean = (versionName || "")
+    .toString()
+    .trim()
+    .replace(/^v/i, "");
+
+  const parts = clean.match(/\d+/g);
+  if (!parts || !parts.length) return null;
+
+  const major = Number(parts[0] || 0);
+  const minor = Number(parts[1] || 0);
+  const patch = Number(parts[2] || 0);
+  const build = Number(parts[3] || 0);
+
+  if (
+    !Number.isSafeInteger(major) ||
+    !Number.isSafeInteger(minor) ||
+    !Number.isSafeInteger(patch) ||
+    !Number.isSafeInteger(build)
+  ) {
+    return null;
+  }
+
+  if (major < 0 || minor < 0 || patch < 0 || build < 0) return null;
+  if (major > 9999 || minor > 999 || patch > 999 || build > 9999) return null;
+
+  return major * 1000000000 + minor * 1000000 + patch * 10000 + build;
 };
 
 const CATEGORY_RULES = [
@@ -656,12 +1093,42 @@ const importCandidate = async (env, rawCandidate) => {
   const release = await githubLatestRelease(env, owner, repo);
   if (!release) return { skipped: true, reason: "no_stable_release" };
 
-  const asset = findApkAsset(release);
-  if (!asset) return { skipped: true, reason: "no_apk_asset" };
-  if (asset.size > MAX_APK_BYTES) return { skipped: true, reason: "apk_too_large" };
+  const asset = findApkAsset(release, {
+    assetMatch: rawCandidate.assetMatch,
+    preferredAbi: rawCandidate.preferredAbi || "arm64-v8a",
+  });
 
-  const versionCode = tagToVersionCode(release.tag_name);
-  if (!versionCode) return { skipped: true, reason: "unparseable_tag" };
+  if (!asset) return { skipped: true, reason: "no_matching_apk_asset" };
+
+  const maxApkBytes = rawCandidate.adminImport === true
+    ? ADMIN_MAX_APK_BYTES
+    : MAX_APK_BYTES;
+
+  if (asset.size > maxApkBytes) {
+    return {
+      skipped: true,
+      reason: "apk_too_large",
+      assetSize: asset.size,
+      maxApkBytes,
+      adminImport: rawCandidate.adminImport === true,
+    };
+  }
+
+  const assetVersionName = assetNameToVersionName(asset.name);
+  const versionName = tagToVersionCode(release.tag_name)
+    ? release.tag_name
+    : assetVersionName;
+
+  const versionCode = tagToVersionCode(release.tag_name) || versionNameToVersionCode(assetVersionName);
+
+  if (!versionName || !versionCode) {
+    return {
+      skipped: true,
+      reason: "unparseable_version",
+      releaseTag: release.tag_name,
+      assetName: asset.name,
+    };
+  }
 
   const packageName = makePlaceholderPackageName(candidate.fullName);
   const byPkg       = await getAppByPackage(env, packageName);
@@ -681,22 +1148,31 @@ const importCandidate = async (env, rawCandidate) => {
     return { skipped: true, reason: `apk_download_error:${String(e?.message || e)}` };
   }
 
-  if (apkBuffer.byteLength > MAX_APK_BYTES) {
-    return { skipped: true, reason: "apk_too_large_post_download" };
+  if (apkBuffer.byteLength > maxApkBytes) {
+    return {
+      skipped: true,
+      reason: "apk_too_large_post_download",
+      assetSize: apkBuffer.byteLength,
+      maxApkBytes,
+      adminImport: rawCandidate.adminImport === true,
+    };
   }
 
+  let rawReadme = null;
   let readmeDescription = null;
 
   try {
-    readmeDescription = await githubReadmeDescription(env, owner, repo);
+    rawReadme = await githubReadmeRaw(env, owner, repo);
+    readmeDescription = rawReadme ? stripReadmeToDescription(rawReadme) : null;
   } catch {
+    rawReadme = null;
     readmeDescription = null;
   }
 
-  const summary     = (candidate.description || "").slice(0, 200).trim() || null;
-  const description = readmeDescription || candidate.description || null;
-  const iconKey     = await uploadIconFromUrl(env, packageName, candidate.iconUrl);
-  const category = inferCategory(candidate, readmeDescription || "");
+  const summary     = normalizeStoreText((candidate.description || "").slice(0, 200).trim()) || null;
+  const description = normalizeStoreText(readmeDescription || candidate.description || null);
+  const iconKey     = null;
+  const category    = inferCategory(candidate, readmeDescription || "");
 
   const appId = await createUnclaimedStoreApp(env, {
     packageName,
@@ -709,6 +1185,12 @@ const importCandidate = async (env, rawCandidate) => {
   });
 
   if (!appId) return { skipped: true, reason: "app_create_failed" };
+  let screenshotKeys = [];
+
+  if (rawReadme) {
+    const createdApp = await getStoreAppById(env, appId);
+    screenshotKeys = await saveReadmeScreenshotsIfMissing(env, createdApp, owner, repo, rawReadme);
+  }
 
   try {
     await uploadBufferToStaging(env, packageName, versionCode, apkBuffer);
@@ -721,7 +1203,7 @@ const importCandidate = async (env, rawCandidate) => {
     appId,
     developerId: COMMUNITY_DEVELOPER_ID,
     packageName,
-    versionName: release.tag_name,
+    versionName,
     versionCode,
     stagingKey:  `staging/${packageName}/${versionCode}/app.apk`,
   });
@@ -740,7 +1222,9 @@ const importCandidate = async (env, rawCandidate) => {
     packageName,
     versionCode,
     category,
+    assetName: asset.name,
     hasIcon: !!iconKey,
+    hasScreenshots: screenshotKeys.length > 0,
     hasReadmeDescription: !!readmeDescription,
   };
 };
@@ -811,6 +1295,59 @@ const collectCandidates = async (env) => {
   return candidates;
 };
 
+const repoCandidateFromUrl = async (env, repoUrl, input = {}) => {
+  const normalizedRepoUrl = normalizeGitHubRepoUrl(repoUrl);
+  if (!normalizedRepoUrl) return null;
+
+  const match = normalizedRepoUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)$/i);
+  if (!match) return null;
+
+  const owner = match[1];
+  const repo = match[2];
+
+  const details = await githubRepoDetails(env, owner, repo);
+
+  return {
+    fullName: `${owner}/${repo}`,
+    name: input.name || details?.name || repo,
+    description: input.summary || input.description || details?.description || "",
+    stars: details?.stars || 0,
+    topics: details?.topics || [],
+    repoUrl: normalizedRepoUrl,
+    iconUrl: input.iconUrl || details?.iconUrl || null,
+    assetMatch: input.assetMatch || null,
+    preferredAbi: input.preferredAbi || "arm64-v8a",
+    adminImport: input.adminImport === true,
+  };
+};
+
+export async function runGitHubDirectImport(env, input = {}) {
+  const repoUrl = (input.repoUrl || "").toString().trim();
+  if (!repoUrl) {
+    return { imported: false, skipped: true, reason: "repoUrl_required" };
+  }
+
+  const candidate = await repoCandidateFromUrl(env, repoUrl, input);
+  if (!candidate) {
+    return { imported: false, skipped: true, reason: "invalid_github_repo" };
+  }
+
+  const outcome = await importCandidate(env, candidate);
+
+  console.log(JSON.stringify({
+    tag: "direct_github_import",
+    repo: candidate.fullName,
+    assetMatch: candidate.assetMatch,
+    preferredAbi: candidate.preferredAbi,
+    outcome,
+  }));
+
+  return {
+    repo: candidate.fullName,
+    ...outcome,
+  };
+}
+
 export async function runGitHubReadmeSweep(env, limit = 50) {
   const apps = await getAutoTrackedAppsForReadmeSweep(env, limit);
 
@@ -818,6 +1355,7 @@ export async function runGitHubReadmeSweep(env, limit = 50) {
     checked: 0,
     updated: 0,
     skipped: 0,
+    imagesAdded: 0,
     errors: [],
   };
 
@@ -837,15 +1375,25 @@ export async function runGitHubReadmeSweep(env, limit = 50) {
       const repo = match[2];
 
       const details = await githubRepoDetails(env, owner, repo);
-      const readmeDescription = await githubReadmeDescription(env, owner, repo);
 
-      if (!details && !readmeDescription) {
+      let rawReadme = null;
+      let readmeDescription = null;
+
+      try {
+        rawReadme = await githubReadmeRaw(env, owner, repo);
+        readmeDescription = rawReadme ? stripReadmeToDescription(rawReadme) : null;
+      } catch {
+        rawReadme = null;
+        readmeDescription = null;
+      }
+
+      if (!details && !readmeDescription && !rawReadme) {
         results.skipped++;
         continue;
       }
 
-      const summary = (details?.description || app.summary || "").slice(0, 200).trim() || null;
-      const description = readmeDescription || details?.description || app.description || null;
+      const summary = normalizeStoreText((details?.description || app.summary || "").slice(0, 200).trim()) || null;
+      const description = normalizeStoreText(readmeDescription || details?.description || app.description || null);
       const category = inferCategory(
         {
           fullName: details?.fullName || `${owner}/${repo}`,
@@ -858,9 +1406,20 @@ export async function runGitHubReadmeSweep(env, limit = 50) {
 
       await updateAutoTrackedAppDescription(env, app.id, summary, description, category);
 
-      const updatedApp = await getStoreAppById(env, app.id);
+      let updatedApp = await getStoreAppById(env, app.id);
+      let screenshotKeys = [];
+
+      if (updatedApp && rawReadme) {
+        screenshotKeys = await saveReadmeScreenshotsIfMissing(env, updatedApp, owner, repo, rawReadme);
+        updatedApp = await getStoreAppById(env, app.id);
+      }
+
       if (updatedApp) {
         await addOrUpdateApp(env, buildIndexAppEntry(env, updatedApp));
+      }
+
+      if (screenshotKeys.length > 0) {
+        results.imagesAdded += screenshotKeys.length;
       }
 
       results.updated++;
@@ -870,6 +1429,7 @@ export async function runGitHubReadmeSweep(env, limit = 50) {
         appId: app.id,
         repo: `${owner}/${repo}`,
         hasReadmeDescription: !!readmeDescription,
+        readmeImagesAdded: screenshotKeys.length,
       }));
     } catch (e) {
       results.errors.push({
@@ -885,6 +1445,7 @@ export async function runGitHubReadmeSweep(env, limit = 50) {
     checked: results.checked,
     updated: results.updated,
     skipped: results.skipped,
+    imagesAdded: results.imagesAdded,
     errors: results.errors.length,
   }));
 

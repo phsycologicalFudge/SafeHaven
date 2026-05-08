@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:ui' as ui;
+import 'dart:collection';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import '../../../services/theme/theme_manager.dart';
@@ -59,24 +60,58 @@ Color polishAccentColor(Color color) {
       .toColor();
 }
 
-Future<Color?> extractImageColor(String iconUrl) async {
-  if (iconUrl.isEmpty) return null;
+const int _maxIconColorCacheEntries = 160;
+
+final LinkedHashMap<String, Color> _iconColorCache =
+LinkedHashMap<String, Color>();
+
+final Map<String, Future<Color?>> _iconColorFutureCache = {};
+
+Future<Color?> extractImageColor(String iconUrl) {
+  final url = iconUrl.trim();
+  if (url.isEmpty) return Future.value(null);
+
+  final cached = _iconColorCache[url];
+  if (cached != null) {
+    _iconColorCache.remove(url);
+    _iconColorCache[url] = cached;
+    return Future.value(cached);
+  }
+
+  final pending = _iconColorFutureCache[url];
+  if (pending != null) return pending;
+
+  final future = _extractImageColorUncached(url);
+  _iconColorFutureCache[url] = future;
+
+  return future.then((color) {
+    if (color != null) {
+      _iconColorCache[url] = color;
+
+      while (_iconColorCache.length > _maxIconColorCacheEntries) {
+        _iconColorCache.remove(_iconColorCache.keys.first);
+      }
+    }
+
+    return color;
+  }).whenComplete(() {
+    _iconColorFutureCache.remove(url);
+  });
+}
+
+Future<Color?> _extractImageColorUncached(String iconUrl) async {
+  ui.Image? image;
 
   try {
-    final image = await _loadUiImage(iconUrl);
+    image = await _loadUiImage(iconUrl);
     final byteData = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
-    if (byteData == null) {
-      image.dispose();
-      return null;
-    }
+
+    if (byteData == null) return null;
 
     final bytes = byteData.buffer.asUint8List();
     final pixelCount = image.width * image.height;
 
-    if (pixelCount == 0) {
-      image.dispose();
-      return null;
-    }
+    if (pixelCount == 0) return null;
 
     final buckets = <int, double>{};
 
@@ -109,8 +144,6 @@ Future<Color?> extractImageColor(String iconUrl) async {
       buckets[key] = (buckets[key] ?? 0) + weight;
     }
 
-    image.dispose();
-
     if (buckets.isEmpty) return null;
 
     final best = buckets.entries.reduce(
@@ -125,12 +158,19 @@ Future<Color?> extractImageColor(String iconUrl) async {
     );
   } catch (_) {
     return null;
+  } finally {
+    image?.dispose();
   }
 }
 
 Future<ui.Image> _loadUiImage(String url) {
   final completer = Completer<ui.Image>();
-  final provider = NetworkImage(url);
+  final provider = ResizeImage.resizeIfNeeded(
+    96,
+    96,
+    NetworkImage(url),
+  );
+
   late final ImageStreamListener listener;
   final stream = provider.resolve(ImageConfiguration.empty);
 

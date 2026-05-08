@@ -1,5 +1,4 @@
 import 'package:safehaven/services/ratings/ranking_service.dart';
-
 import 'store_service.dart';
 
 class IndexService {
@@ -8,6 +7,8 @@ class IndexService {
 
   StoreIndex? _cache;
   DateTime? _cacheTime;
+  Future<StoreIndex>? _inFlightFetch;
+
   static const _ttl = Duration(minutes: 5);
 
   bool get _isCacheValid =>
@@ -15,12 +16,27 @@ class IndexService {
           _cacheTime != null &&
           DateTime.now().difference(_cacheTime!) < _ttl;
 
-  Future<StoreIndex> fetchIndex({bool forceRefresh = false}) async {
-    if (!forceRefresh && _isCacheValid) return _cache!;
-    final index = await StoreService.instance.fetchIndex();
-    _cache = index;
-    _cacheTime = DateTime.now();
-    return index;
+  Future<StoreIndex> fetchIndex({bool forceRefresh = false}) {
+    if (!forceRefresh && _isCacheValid) return Future.value(_cache!);
+
+    if (!forceRefresh) {
+      final pending = _inFlightFetch;
+      if (pending != null) return pending;
+    }
+
+    final fetch = StoreService.instance.fetchIndex().then((index) {
+      _cache = index;
+      _cacheTime = DateTime.now();
+      return index;
+    });
+
+    _inFlightFetch = fetch;
+
+    return fetch.whenComplete(() {
+      if (identical(_inFlightFetch, fetch)) {
+        _inFlightFetch = null;
+      }
+    });
   }
 
   StoreIndex? get cached => _cache;
@@ -40,7 +56,7 @@ class IndexService {
       List<PublicStoreApp> apps,
       String? category,
       ) {
-    if (category == null) return apps;
+    if (category == null || category.isEmpty) return apps;
     return apps.where((a) => a.category == category).toList();
   }
 

@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
+import '../../services/catalogue_service.dart';
 import '../../services/theme/theme_manager.dart';
 import '../../services/index_service.dart';
 import '../../services/store_service.dart';
 import '../../services/installer/apk_install_service.dart';
+import '../../widgets/animated_tap.dart';
 import '../../widgets/identity_setup_dialog.dart';
 import 'appScreen/app_screen.dart';
 import 'search_screen.dart';
+import 'dart:async';
 
 PageRouteBuilder<void> _pushRoute(Widget page) {
   return PageRouteBuilder<void>(
@@ -133,17 +136,20 @@ class _CatalogueScreenState extends State<CatalogueScreen> {
                     SliverToBoxAdapter(child: recommendedSection),
                   if (topCharts.isNotEmpty)
                     SliverToBoxAdapter(
-                      child: _HorizontalSection(
-                        title: 'Top charts',
-                        apps: topCharts,
+                      child: _TopChartsVerticalSection(
+                        apps: topCharts.take(10).toList(),
+                        onAllApps: () {
+                          Navigator.of(context).push(
+                            _pushRoute(
+                              _SeeMoreAppsScreen(
+                                title: 'All apps',
+                                apps: filtered,
+                              ),
+                            ),
+                          );
+                        },
                       ),
                     ),
-                  SliverToBoxAdapter(
-                    child: _VerticalSection(
-                      title: 'All apps',
-                      apps: filtered,
-                    ),
-                  ),
                 ],
               const SliverToBoxAdapter(child: SizedBox(height: 18)),
             ],
@@ -182,50 +188,50 @@ class _SearchButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = SafeHavenTheme.of(context);
 
-    return GestureDetector(
-      onTap: () {
-        Navigator.of(context).push(_pushRoute(const SearchScreen()));
-      },
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(18, 4, 18, 12),
-        child: AbsorbPointer(
-          child: Container(
-            height: 48,
-            decoration: BoxDecoration(
-              color: colors.surface,
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: colors.border),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(
-                    SafeHavenThemeManager.instance.isDark ? 0.16 : 0.045,
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(18, 4, 18, 12),
+      child: AnimatedTap(
+        borderRadius: 14,
+        scale: 0.985,
+        onTap: () {
+          Navigator.of(context).push(_pushRoute(const SearchScreen()));
+        },
+        child: Container(
+          height: 48,
+          decoration: BoxDecoration(
+            color: colors.surface,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: colors.border),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(
+                  SafeHavenThemeManager.instance.isDark ? 0.16 : 0.045,
+                ),
+                blurRadius: 18,
+                offset: const Offset(0, 8),
+              ),
+            ],
+          ),
+          child: Row(
+            children: [
+              const SizedBox(width: 14),
+              Icon(
+                Icons.search_rounded,
+                size: 22,
+                color: colors.textMuted,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Search apps',
+                  style: TextStyle(
+                    fontSize: 15,
+                    color: colors.textMuted,
                   ),
-                  blurRadius: 18,
-                  offset: const Offset(0, 8),
                 ),
-              ],
-            ),
-            child: Row(
-              children: [
-                const SizedBox(width: 14),
-                Icon(
-                  Icons.search_rounded,
-                  size: 22,
-                  color: colors.textMuted,
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    'Search apps',
-                    style: TextStyle(
-                      fontSize: 15,
-                      color: colors.textMuted,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 14),
-              ],
-            ),
+              ),
+              const SizedBox(width: 14),
+            ],
           ),
         ),
       ),
@@ -297,9 +303,10 @@ class _CategoryTabItem extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = SafeHavenTheme.of(context);
 
-    return InkWell(
+    return AnimatedTap(
+      borderRadius: 10,
+      scale: 0.96,
       onTap: onTap,
-      borderRadius: BorderRadius.circular(10),
       child: Padding(
         padding: const EdgeInsets.only(right: 26),
         child: Column(
@@ -335,36 +342,453 @@ class _CategoryTabItem extends StatelessWidget {
   }
 }
 
-class _RecommendedSection extends StatelessWidget {
+class _RecommendedSection extends StatefulWidget {
   const _RecommendedSection({required this.future});
 
   final Future<List<PublicStoreApp>> future;
 
   @override
+  State<_RecommendedSection> createState() => _RecommendedSectionState();
+}
+
+class _RecommendedSectionState extends State<_RecommendedSection> {
+  late final PageController _controller;
+  Timer? _timer;
+  int _page = 0;
+  Future<List<CatalogueBannerItem>>? _bannerFuture;
+  List<PublicStoreApp>? _lastApps;
+
+  static const Duration _bannerHoldDuration = Duration(seconds: 5);
+  static const Duration _bannerMoveDuration = Duration(milliseconds: 520);
+  static const Curve _bannerMoveCurve = Curves.easeOutCubic;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = PageController(viewportFraction: 0.94);
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<List<CatalogueBannerItem>> _bannersFor(List<PublicStoreApp> apps) {
+    if (_bannerFuture == null || !identical(_lastApps, apps)) {
+      _lastApps = apps;
+      _bannerFuture = CatalogueService.instance.bannersFor(apps);
+    }
+
+    return _bannerFuture!;
+  }
+
+  void _startTimer(int count) {
+    if (count <= 1 || _timer != null) return;
+
+    _timer = Timer.periodic(_bannerHoldDuration, (_) {
+      if (!mounted || !_controller.hasClients) return;
+
+      _page += 1;
+
+      _controller.animateToPage(
+        _page,
+        duration: _bannerMoveDuration,
+        curve: _bannerMoveCurve,
+      );
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
     return FutureBuilder<List<PublicStoreApp>>(
-      future: future,
+      future: widget.future,
       builder: (context, snapshot) {
         final apps = snapshot.data ?? const <PublicStoreApp>[];
         if (apps.isEmpty) return const SizedBox.shrink();
 
-        return _HorizontalSection(
-          title: 'Recommended for you',
-          apps: apps,
+        return FutureBuilder<List<CatalogueBannerItem>>(
+          future: _bannersFor(apps),
+          builder: (context, bannerSnapshot) {
+            final banners = bannerSnapshot.data ?? const <CatalogueBannerItem>[];
+            if (banners.isEmpty) return const SizedBox.shrink();
+
+            _startTimer(banners.length);
+
+            return Padding(
+              padding: const EdgeInsets.only(top: 12),
+              child: Column(
+                children: [
+                  const _SectionHeader(title: 'Recommended for you'),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    height: 190,
+                    child: PageView.builder(
+                      controller: _controller,
+                      padEnds: false,
+                      onPageChanged: (index) {
+                        _page = index;
+                      },
+                      itemBuilder: (context, index) {
+                        final banner = banners[index % banners.length];
+
+                        return Padding(
+                          padding: EdgeInsets.only(
+                            left: index == 0 ? 18 : 5,
+                            right: 5,
+                          ),
+                          child: _RecommendedBannerCard(item: banner),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
         );
       },
     );
   }
 }
 
-class _HorizontalSection extends StatelessWidget {
-  const _HorizontalSection({required this.title, required this.apps});
+class _RecommendedBannerCard extends StatelessWidget {
+  const _RecommendedBannerCard({required this.item});
 
-  final String title;
-  final List<PublicStoreApp> apps;
+  final CatalogueBannerItem item;
 
   @override
   Widget build(BuildContext context) {
+    final app = item.app;
+
+    return AnimatedTap(
+      borderRadius: 24,
+      onTap: () {
+        Navigator.of(context).push(_pushRoute(AppScreen(app: app)));
+      },
+      child: Container(
+        decoration: BoxDecoration(
+          gradient: item.gradient,
+          borderRadius: BorderRadius.circular(24),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Stack(
+          children: [
+            Positioned(
+              right: -34,
+              top: -32,
+              child: Opacity(
+                opacity: 0.16,
+                child: _BannerLargeIcon(app: app),
+              ),
+            ),
+            Positioned(
+              right: 22,
+              bottom: 22,
+              child: _BannerForegroundIcon(app: app),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 18, 104, 18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Spacer(),
+                  Text(
+                    app.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 21,
+                      height: 1.05,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: -0.5,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 7),
+                  Text(
+                    app.displaySummary,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 13,
+                      height: 1.25,
+                      fontWeight: FontWeight.w500,
+                      color: Colors.white.withOpacity(0.86),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      if (app.ratingCount > 0)
+                        Text(
+                          '${app.displayRating} ★',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w800,
+                            color: Colors.white.withOpacity(0.9),
+                          ),
+                        ),
+                      if (app.ratingCount > 0 && app.developerName.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          child: Container(
+                            width: 3,
+                            height: 3,
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.65),
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ),
+                      if (app.developerName.isNotEmpty)
+                        Expanded(
+                          child: Text(
+                            app.developerName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: Colors.white.withOpacity(0.82),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _BannerForegroundIcon extends StatelessWidget {
+  const _BannerForegroundIcon({required this.app});
+
+  final PublicStoreApp app;
+
+  @override
+  Widget build(BuildContext context) {
+    final iconUrl = app.iconUrl;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(18),
+      child: SizedBox(
+        width: 68,
+        height: 68,
+        child: iconUrl == null
+            ? Container(
+          color: Colors.white.withOpacity(0.16),
+          child: const Icon(
+            Icons.apps_rounded,
+            size: 34,
+            color: Colors.white,
+          ),
+        )
+            : Image.network(
+          iconUrl,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => Container(
+            color: Colors.white.withOpacity(0.16),
+            child: const Icon(
+              Icons.apps_rounded,
+              size: 34,
+              color: Colors.white,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _BannerLargeIcon extends StatelessWidget {
+  const _BannerLargeIcon({required this.app});
+
+  final PublicStoreApp app;
+
+  @override
+  Widget build(BuildContext context) {
+    final iconUrl = app.iconUrl;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(36),
+      child: SizedBox(
+        width: 174,
+        height: 174,
+        child: iconUrl == null
+            ? Container(
+          color: Colors.white.withOpacity(0.16),
+          child: const Icon(
+            Icons.apps_rounded,
+            size: 116,
+            color: Colors.white,
+          ),
+        )
+            : Image.network(
+          iconUrl,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => Container(
+            color: Colors.white.withOpacity(0.16),
+            child: const Icon(
+              Icons.apps_rounded,
+              size: 116,
+              color: Colors.white,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TopChartsVerticalSection extends StatelessWidget {
+  const _TopChartsVerticalSection({
+    required this.apps,
+    required this.onAllApps,
+  });
+
+  final List<PublicStoreApp> apps;
+  final VoidCallback onAllApps;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 16),
+      child: Column(
+        children: [
+          const _SectionHeader(title: 'Top charts'),
+          const SizedBox(height: 8),
+          ...apps.map((app) => _TopChartWideRow(app: app)),
+          _AllAppsTextButton(onTap: onAllApps),
+        ],
+      ),
+    );
+  }
+}
+
+class _TopChartWideRow extends StatelessWidget {
+  const _TopChartWideRow({required this.app});
+
+  final PublicStoreApp app;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = SafeHavenTheme.of(context);
+
+    return AnimatedTap(
+      borderRadius: 18,
+      onTap: () {
+        Navigator.of(context).push(_pushRoute(AppScreen(app: app)));
+      },
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(18, 12, 10, 12),
+        child: Row(
+          children: [
+            _AppIcon(app: app, size: 66),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    app.name,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 16.5,
+                      height: 1.12,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: -0.25,
+                      color: colors.text,
+                    ),
+                  ),
+                  const SizedBox(height: 5),
+                  Text(
+                    app.ratingCount > 0
+                        ? '${app.displayRating} ★'
+                        : app.developerName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: colors.textMuted,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            _DownloadButton(app: app),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AllAppsTextButton extends StatelessWidget {
+  const _AllAppsTextButton({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = SafeHavenTheme.of(context);
+
+    return AnimatedTap(
+      borderRadius: 14,
+      scale: 0.96,
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(18, 16, 18, 4),
+        child: Row(
+          children: [
+            Text(
+              'All apps',
+              style: TextStyle(
+                fontSize: 15.5,
+                fontWeight: FontWeight.w800,
+                letterSpacing: -0.2,
+                color: colors.accentStart,
+              ),
+            ),
+            const SizedBox(width: 6),
+            Icon(
+              Icons.arrow_forward_rounded,
+              size: 18,
+              color: colors.accentStart,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HorizontalSection extends StatelessWidget {
+  const _HorizontalSection({
+    required this.title,
+    required this.apps,
+    this.limit = 10,
+    this.onSeeMore,
+  });
+
+  final String title;
+  final List<PublicStoreApp> apps;
+  final int limit;
+  final VoidCallback? onSeeMore;
+
+  @override
+  Widget build(BuildContext context) {
+    final visibleApps = apps.take(limit).toList();
+    final showSeeMore = onSeeMore != null && apps.length > visibleApps.length;
+
     return Padding(
       padding: const EdgeInsets.only(top: 12),
       child: Column(
@@ -376,10 +800,15 @@ class _HorizontalSection extends StatelessWidget {
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 18),
-              itemCount: apps.length,
+              itemCount: visibleApps.length + (showSeeMore ? 1 : 0),
               separatorBuilder: (_, __) => const SizedBox(width: 12),
-              itemBuilder: (context, index) =>
-                  _AppSmallTile(app: apps[index]),
+              itemBuilder: (context, index) {
+                if (index < visibleApps.length) {
+                  return _AppSmallTile(app: visibleApps[index]);
+                }
+
+                return _SeeMoreTile(onTap: onSeeMore!);
+              },
             ),
           ),
         ],
@@ -409,41 +838,98 @@ class _VerticalSection extends StatelessWidget {
   }
 }
 
-class _SectionHeader extends StatelessWidget {
-  const _SectionHeader({required this.title, this.onTap});
+class _SeeMoreAppsScreen extends StatelessWidget {
+  const _SeeMoreAppsScreen({
+    required this.title,
+    required this.apps,
+  });
 
   final String title;
-  final VoidCallback? onTap;
+  final List<PublicStoreApp> apps;
 
   @override
   Widget build(BuildContext context) {
     final colors = SafeHavenTheme.of(context);
 
-    return GestureDetector(
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 18),
-        child: Row(
-          children: [
-            Expanded(
-              child: Text(
-                title,
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: -0.3,
-                  color: colors.text,
+    return Scaffold(
+      backgroundColor: colors.background,
+      body: SafeArea(
+        child: CustomScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: [
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(8, 4, 18, 8),
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 44,
+                      height: 44,
+                      child: IconButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        icon: Icon(
+                          Icons.arrow_back_rounded,
+                          color: colors.text,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: -0.5,
+                          color: colors.text,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
-            if (onTap != null)
-              Icon(
-                Icons.arrow_forward_rounded,
-                size: 20,
-                color: colors.textSoft,
+            SliverToBoxAdapter(
+              child: _VerticalSection(
+                title: title,
+                apps: apps,
               ),
+            ),
+            const SliverToBoxAdapter(child: SizedBox(height: 18)),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  const _SectionHeader({required this.title});
+
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = SafeHavenTheme.of(context);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 18),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              title,
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+                letterSpacing: -0.3,
+                color: colors.text,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -465,25 +951,25 @@ class _AppSmallTile extends StatelessWidget {
     final colors = SafeHavenTheme.of(context);
 
     return SizedBox(
-      width: 74,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(14),
+      width: 82,
+      child: AnimatedTap(
+        borderRadius: 14,
         onTap: () {
           Navigator.of(context).push(_pushRoute(AppScreen(app: app)));
         },
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _AppIcon(app: app, size: 68),
-            const SizedBox(height: 7),
+            _RawAppIcon(app: app, size: 76, radius: 18),
+            const SizedBox(height: 8),
             Text(
               _compactAppName(app.name),
               maxLines: 1,
               overflow: TextOverflow.clip,
               style: TextStyle(
-                fontSize: 12.5,
+                fontSize: 13,
                 height: 1.15,
-                fontWeight: FontWeight.w700,
+                fontWeight: FontWeight.w800,
                 color: colors.text,
               ),
             ),
@@ -494,11 +980,64 @@ class _AppSmallTile extends StatelessWidget {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                  fontSize: 11.5,
+                  fontSize: 12,
                   color: colors.textMuted,
                 ),
               ),
             ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SeeMoreTile extends StatelessWidget {
+  const _SeeMoreTile({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = SafeHavenTheme.of(context);
+
+    return SizedBox(
+      width: 85,
+      child: AnimatedTap(
+        borderRadius: 12,
+        scale: 0.96,
+        onTap: onTap,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              height: 68,
+              child: Center(
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'See more',
+                      maxLines: 1,
+                      style: TextStyle(
+                        fontSize: 13,
+                        height: 1.0,
+                        fontWeight: FontWeight.w700,
+                        color: colors.accentStart.withOpacity(0.9),
+                      ),
+                    ),
+                    const SizedBox(width: 5),
+                    Icon(
+                      Icons.arrow_forward_rounded,
+                      size: 16,
+                      color: colors.accentStart.withOpacity(0.9),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 7),
+            const SizedBox(height: 18),
           ],
         ),
       ),
@@ -515,41 +1054,46 @@ class _AppWideRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = SafeHavenTheme.of(context);
 
-    return InkWell(
+    return AnimatedTap(
+      borderRadius: 18,
       onTap: () {
         Navigator.of(context).push(_pushRoute(AppScreen(app: app)));
       },
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(18, 10, 8, 10),
+        padding: const EdgeInsets.fromLTRB(18, 12, 10, 12),
         child: Row(
           children: [
-            _AppIcon(app: app, size: 56),
-            const SizedBox(width: 14),
+            _RawAppIcon(app: app, size: 66, radius: 18),
+            const SizedBox(width: 16),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
                     app.name,
-                    maxLines: 1,
+                    maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: -0.2,
+                      fontSize: 16.5,
+                      height: 1.12,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: -0.25,
                       color: colors.text,
                     ),
                   ),
-                  if (app.ratingCount > 0) ...[
-                    const SizedBox(height: 3),
-                    Text(
-                      '${app.displayRating} ★',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: colors.textMuted,
-                      ),
+                  const SizedBox(height: 5),
+                  Text(
+                    app.ratingCount > 0
+                        ? '${app.displayRating} ★'
+                        : app.developerName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: colors.textMuted,
                     ),
-                  ],
+                  ),
                 ],
               ),
             ),
@@ -714,8 +1258,9 @@ class _DownloadButtonState extends State<_DownloadButton>
         onTap = null;
     }
 
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
+    return AnimatedTap(
+      borderRadius: 12,
+      scale: 0.94,
       onTap: onTap,
       child: SizedBox(
         width: 44,
@@ -755,6 +1300,7 @@ class _AppIcon extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = SafeHavenTheme.of(context);
+    final iconUrl = app.iconUrl;
 
     return Container(
       width: size,
@@ -765,10 +1311,10 @@ class _AppIcon extends StatelessWidget {
         border: Border.all(color: colors.border),
       ),
       clipBehavior: Clip.antiAlias,
-      child: app.iconUrl.isEmpty
+      child: iconUrl == null
           ? null
           : Image.network(
-        app.iconUrl,
+        iconUrl,
         width: size,
         height: size,
         fit: BoxFit.cover,
@@ -777,6 +1323,53 @@ class _AppIcon extends StatelessWidget {
           if (loadingProgress == null) return child;
           return const SizedBox.shrink();
         },
+      ),
+    );
+  }
+}
+
+class _RawAppIcon extends StatelessWidget {
+  const _RawAppIcon({
+    required this.app,
+    required this.size,
+    required this.radius,
+  });
+
+  final PublicStoreApp app;
+  final double size;
+  final double radius;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = SafeHavenTheme.of(context);
+    final iconUrl = app.iconUrl;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(radius),
+      child: SizedBox(
+        width: size,
+        height: size,
+        child: iconUrl == null
+            ? Container(
+          color: colors.surfaceSoft,
+          child: Icon(
+            Icons.apps_rounded,
+            size: size * 0.48,
+            color: colors.textMuted,
+          ),
+        )
+            : Image.network(
+          iconUrl,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => Container(
+            color: colors.surfaceSoft,
+            child: Icon(
+              Icons.apps_rounded,
+              size: size * 0.48,
+              color: colors.textMuted,
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -841,21 +1434,18 @@ class _ErrorBlock extends StatelessWidget {
                 gradient: colors.accentGradient,
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(10),
-                  onTap: onRetry,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 28),
-                    child: Center(
-                      child: Text(
-                        'Retry',
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w800,
-                          color: colors.buttonText,
-                        ),
+              child: AnimatedTap(
+                borderRadius: 10,
+                onTap: onRetry,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 28),
+                  child: Center(
+                    child: Text(
+                      'Retry',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        color: colors.buttonText,
                       ),
                     ),
                   ),

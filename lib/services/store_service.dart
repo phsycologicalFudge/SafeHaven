@@ -1,5 +1,4 @@
 import 'dart:convert';
-
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -285,7 +284,7 @@ class PublicStoreApp {
   final double ratingAvg;
   final int ratingCount;
   final List<StoreVersion> versions;
-  final String iconUrl;
+  final String? iconUrl;
   final List<String> screenshots;
 
   factory PublicStoreApp.fromJson(Map<String, dynamic> json) {
@@ -308,7 +307,7 @@ class PublicStoreApp {
           .map(StoreVersion.fromJson)
           .toList()
           : const [],
-      iconUrl: _asString(json['iconUrl']),
+      iconUrl: _asNullableString(json['iconUrl']),
       screenshots: screenshots is List
           ? screenshots.whereType<String>().toList()
           : const [],
@@ -607,4 +606,13 @@ String _normaliseTrustLevel(dynamic value) {
     default:
       return '';
   }
+}
+
+String? _asNullableString(dynamic value) {
+  if (value == null) return null;
+
+  final clean = value.toString().trim();
+  if (clean.isEmpty) return null;
+
+  return clean;
 }

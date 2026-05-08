@@ -4,7 +4,32 @@ import '../../services/history_service.dart';
 import '../../services/index_service.dart';
 import '../../services/store_service.dart';
 import '../../services/theme/theme_manager.dart';
+import '../../widgets/animated_tap.dart';
 import 'appScreen/app_screen.dart';
+
+PageRouteBuilder<void> _pushRoute(Widget page) {
+  return PageRouteBuilder<void>(
+    pageBuilder: (_, __, ___) => page,
+    transitionDuration: const Duration(milliseconds: 260),
+    reverseTransitionDuration: const Duration(milliseconds: 210),
+    transitionsBuilder: (_, animation, __, child) {
+      final curved = CurvedAnimation(
+        parent: animation,
+        curve: Curves.easeOutCubic,
+      );
+      return FadeTransition(
+        opacity: curved,
+        child: SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(0, 0.04),
+            end: Offset.zero,
+          ).animate(curved),
+          child: child,
+        ),
+      );
+    },
+  );
+}
 
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
@@ -14,38 +39,43 @@ class HistoryScreen extends StatefulWidget {
 }
 
 class _HistoryScreenState extends State<HistoryScreen> {
-  late Future<_HistoryData> _future;
+  late Future<List<PublicStoreApp>> _future;
 
   @override
   void initState() {
     super.initState();
     _future = _load();
+    HistoryService.instance.changes.addListener(_onHistoryChanged);
   }
 
-  Future<_HistoryData> _load() async {
+  @override
+  void dispose() {
+    HistoryService.instance.changes.removeListener(_onHistoryChanged);
+    super.dispose();
+  }
+
+  void _onHistoryChanged() {
+    if (!mounted) return;
+
+    setState(() {
+      _future = _load();
+    });
+  }
+
+  Future<List<PublicStoreApp>> _load() async {
     final results = await Future.wait([
       IndexService.instance.fetchIndex(),
       HistoryService.instance.getViewed(),
-      HistoryService.instance.getInstalled(),
     ]);
 
     final index = results[0] as StoreIndex;
     final viewedPackages = results[1] as List<String>;
-    final installedPackages = results[2] as List<String>;
+    final appMap = {for (final app in index.apps) app.packageName: app};
 
-    final appMap = {for (final a in index.apps) a.packageName: a};
-
-    final viewed = viewedPackages
-        .map((p) => appMap[p])
+    return viewedPackages
+        .map((packageName) => appMap[packageName])
         .whereType<PublicStoreApp>()
-        .toList();
-
-    final installed = installedPackages
-        .map((p) => appMap[p])
-        .whereType<PublicStoreApp>()
-        .toList();
-
-    return _HistoryData(viewed: viewed, installed: installed);
+        .toList(growable: false);
   }
 
   Future<void> _reload() async {
@@ -60,7 +90,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
   Widget build(BuildContext context) {
     final colors = SafeHavenTheme.of(context);
 
-    return FutureBuilder<_HistoryData>(
+    return FutureBuilder<List<PublicStoreApp>>(
       future: _future,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
@@ -105,15 +135,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
           );
         }
 
-        final data = snapshot.data!;
-        final isEmpty = data.viewed.isEmpty && data.installed.isEmpty;
+        final apps = snapshot.data ?? const <PublicStoreApp>[];
 
-        if (isEmpty) {
+        if (apps.isEmpty) {
           return Center(
             child: Padding(
               padding: const EdgeInsets.all(28),
               child: Text(
-                'Apps you view or install will appear here.',
+                'Apps you view will appear here.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize: 14,
@@ -132,28 +161,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
             physics: const AlwaysScrollableScrollPhysics(),
             padding: const EdgeInsets.only(bottom: 18),
             children: [
-              if (data.installed.isNotEmpty) ...[
-                const _SectionHeader(title: 'Installed'),
-                ...data.installed.map((app) => _AppRow(app: app)),
-                const SizedBox(height: 8),
-              ],
-              if (data.viewed.isNotEmpty) ...[
-                const _SectionHeader(title: 'Recently viewed'),
-                ...data.viewed.map((app) => _AppRow(app: app)),
-              ],
+              const _SectionHeader(title: 'Recently viewed'),
+              ...apps.map((app) => _AppRow(app: app)),
             ],
           ),
         );
       },
     );
   }
-}
-
-class _HistoryData {
-  const _HistoryData({required this.viewed, required this.installed});
-
-  final List<PublicStoreApp> viewed;
-  final List<PublicStoreApp> installed;
 }
 
 class _SectionHeader extends StatelessWidget {
@@ -197,17 +212,16 @@ class _AppRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = SafeHavenTheme.of(context);
 
-    return InkWell(
+    return AnimatedTap(
+      borderRadius: 18,
       onTap: () {
-        Navigator.of(context).push(
-          MaterialPageRoute(builder: (_) => AppScreen(app: app)),
-        );
+        Navigator.of(context).push(_pushRoute(AppScreen(app: app)));
       },
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(18, 10, 18, 10),
+        padding: const EdgeInsets.fromLTRB(18, 12, 10, 12),
         child: Row(
           children: [
-            _AppIcon(app: app, size: 52),
+            _AppIcon(app: app, size: 66),
             const SizedBox(width: 14),
             Expanded(
               child: SizedBox(
@@ -244,28 +258,47 @@ class _AppIcon extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = SafeHavenTheme.of(context);
+    final iconUrl = app.iconUrl;
 
-    return Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        color: colors.iconBackground,
-        borderRadius: BorderRadius.circular(size * 0.22),
-        border: Border.all(color: colors.border),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: app.iconUrl.isEmpty
-          ? null
-          : Image.network(
-        app.iconUrl,
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(size * 0.22),
+      child: SizedBox(
         width: size,
         height: size,
-        fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-        loadingBuilder: (_, child, loadingProgress) {
-          if (loadingProgress == null) return child;
-          return const SizedBox.shrink();
-        },
+        child: iconUrl == null
+            ? Container(
+          color: colors.surfaceSoft,
+          child: Icon(
+            Icons.apps_rounded,
+            size: size * 0.48,
+            color: colors.textMuted,
+          ),
+        )
+            : Image.network(
+          iconUrl,
+          width: size,
+          height: size,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => Container(
+            color: colors.surfaceSoft,
+            child: Icon(
+              Icons.apps_rounded,
+              size: size * 0.48,
+              color: colors.textMuted,
+            ),
+          ),
+          loadingBuilder: (_, child, loadingProgress) {
+            if (loadingProgress == null) return child;
+            return Container(
+              color: colors.surfaceSoft,
+              child: Icon(
+                Icons.apps_rounded,
+                size: size * 0.48,
+                color: colors.textMuted,
+              ),
+            );
+          },
+        ),
       ),
     );
   }

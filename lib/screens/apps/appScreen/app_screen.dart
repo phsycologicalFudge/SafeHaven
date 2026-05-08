@@ -17,27 +17,44 @@ class AppScreen extends StatefulWidget {
 
 class _AppScreenState extends State<AppScreen> {
   Color _iconColor = const Color(0xFF161A24);
+  int _iconColorRequestId = 0;
 
   @override
   void initState() {
     super.initState();
-    HistoryService.instance.recordView(widget.app.packageName);
-    HistoryService.instance.recordCategoryView(widget.app.category);
+    _recordHistory();
     _loadIconColor();
   }
 
   @override
   void didUpdateWidget(covariant AppScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.app.packageName != widget.app.packageName) {
+      _recordHistory();
+    }
+
     if (oldWidget.app.iconUrl != widget.app.iconUrl) {
       _iconColor = const Color(0xFF161A24);
       _loadIconColor();
     }
   }
 
+  void _recordHistory() {
+    HistoryService.instance.recordView(widget.app.packageName);
+    HistoryService.instance.recordCategoryView(widget.app.category);
+  }
+
   Future<void> _loadIconColor() async {
-    final color = await extractImageColor(widget.app.iconUrl);
-    if (!mounted || color == null) return;
+    final requestId = ++_iconColorRequestId;
+    final iconUrl = widget.app.iconUrl?.trim();
+
+    if (iconUrl == null || iconUrl.isEmpty) return;
+
+    final color = await extractImageColor(iconUrl);
+
+    if (!mounted || requestId != _iconColorRequestId || color == null) return;
+
     setState(() => _iconColor = color);
   }
 

@@ -2,7 +2,9 @@ package com.colourswift.safehaven
 
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.content.pm.Signature
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -11,6 +13,7 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.security.MessageDigest
 
 class MainActivity : FlutterActivity() {
     private val channelName = "safehaven/installer"
@@ -117,7 +120,15 @@ class MainActivity : FlutterActivity() {
 
     private fun getPackageState(targetPackage: String, result: MethodChannel.Result) {
         try {
-            val info = packageManager.getPackageInfo(targetPackage, 0)
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                PackageManager.GET_SIGNING_CERTIFICATES
+            } else {
+                @Suppress("DEPRECATION")
+                PackageManager.GET_SIGNATURES
+            }
+
+            val info = packageManager.getPackageInfo(targetPackage, flags)
+
             val versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 info.longVersionCode
             } else {
@@ -128,24 +139,48 @@ class MainActivity : FlutterActivity() {
             result.success(
                 mapOf(
                     "installed" to true,
-                    "versionCode" to versionCode
+                    "versionCode" to versionCode,
+                    "versionName" to info.versionName,
+                    "signingCertificateSha256" to getSigningCertificateSha256(info)
                 )
             )
         } catch (_: PackageManager.NameNotFoundException) {
-            result.success(
-                mapOf(
-                    "installed" to false,
-                    "versionCode" to 0L
-                )
-            )
+            result.success(emptyPackageState())
         } catch (_: SecurityException) {
-            result.success(
-                mapOf(
-                    "installed" to false,
-                    "versionCode" to 0L
-                )
-            )
+            result.success(emptyPackageState())
         }
+    }
+
+    private fun emptyPackageState(): Map<String, Any?> {
+        return mapOf(
+            "installed" to false,
+            "versionCode" to 0L,
+            "versionName" to null,
+            "signingCertificateSha256" to null
+        )
+    }
+
+    private fun getSigningCertificateSha256(info: PackageInfo): String? {
+        val signatures: Array<Signature>? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val signingInfo = info.signingInfo ?: return null
+
+            if (signingInfo.hasMultipleSigners()) {
+                signingInfo.apkContentsSigners
+            } else {
+                signingInfo.signingCertificateHistory
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            info.signatures
+        }
+
+        val signature = signatures?.firstOrNull() ?: return null
+        return sha256(signature.toByteArray())
+    }
+
+    private fun sha256(bytes: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+        return digest.joinToString("") { "%02x".format(it) }
     }
 
     private fun openApp(targetPackage: String, result: MethodChannel.Result) {

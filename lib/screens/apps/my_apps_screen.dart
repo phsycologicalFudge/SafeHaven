@@ -4,6 +4,7 @@ import '../../services/index_service.dart';
 import '../../services/installer/apk_install_service.dart';
 import '../../services/store_service.dart';
 import '../../services/theme/theme_manager.dart';
+import '../../widgets/animated_tap.dart';
 import 'appScreen/app_screen.dart';
 
 PageRouteBuilder<void> _pushRoute(Widget page) {
@@ -142,19 +143,6 @@ class _InstalledSection extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(18, 4, 18, 4),
-          child: Text(
-            'Installed [W.I.P]',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.w800,
-              letterSpacing: -0.3,
-              color: colors.text,
-            ),
-          ),
-        ),
-        const SizedBox(height: 2),
         ...apps.map((app) => _InstalledAppRow(app: app)),
       ],
     );
@@ -178,7 +166,8 @@ class _InstalledAppRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = SafeHavenTheme.of(context);
 
-    return InkWell(
+    return AnimatedTap(
+      borderRadius: 18,
       onTap: () {
         Navigator.of(context).push(_pushRoute(AppScreen(app: app)));
       },
@@ -186,7 +175,7 @@ class _InstalledAppRow extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(18, 10, 12, 10),
         child: Row(
           children: [
-            _AppIcon(app: app, size: 56),
+            _AppIcon(app: app, size: 66),
             const SizedBox(width: 14),
             Expanded(
               child: SizedBox(
@@ -224,8 +213,9 @@ class _InstalledAppRow extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 10),
-            GestureDetector(
-              behavior: HitTestBehavior.opaque,
+            AnimatedTap(
+              borderRadius: 12,
+              scale: 0.94,
               onTap: _openApp,
               child: SizedBox(
                 width: 44,
@@ -258,28 +248,47 @@ class _AppIcon extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = SafeHavenTheme.of(context);
+    final iconUrl = app.iconUrl;
 
-    return Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        color: colors.iconBackground,
-        borderRadius: BorderRadius.circular(size * 0.22),
-        border: Border.all(color: colors.border),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: app.iconUrl.isEmpty
-          ? null
-          : Image.network(
-        app.iconUrl,
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(size * 0.22),
+      child: SizedBox(
         width: size,
         height: size,
-        fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-        loadingBuilder: (_, child, loadingProgress) {
-          if (loadingProgress == null) return child;
-          return const SizedBox.shrink();
-        },
+        child: iconUrl == null
+            ? Container(
+          color: colors.surfaceSoft,
+          child: Icon(
+            Icons.apps_rounded,
+            size: size * 0.48,
+            color: colors.textMuted,
+          ),
+        )
+            : Image.network(
+          iconUrl,
+          width: size,
+          height: size,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => Container(
+            color: colors.surfaceSoft,
+            child: Icon(
+              Icons.apps_rounded,
+              size: size * 0.48,
+              color: colors.textMuted,
+            ),
+          ),
+          loadingBuilder: (_, child, loadingProgress) {
+            if (loadingProgress == null) return child;
+            return Container(
+              color: colors.surfaceSoft,
+              child: Icon(
+                Icons.apps_rounded,
+                size: size * 0.48,
+                color: colors.textMuted,
+              ),
+            );
+          },
+        ),
       ),
     );
   }
@@ -293,7 +302,7 @@ class _EmptyBlock extends StatelessWidget {
     final colors = SafeHavenTheme.of(context);
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 64, 24, 64),
+      padding: const EdgeInsets.fromLTRB(18, 12, 10, 12),
       child: Center(
         child: Column(
           children: [
@@ -380,21 +389,18 @@ class _ErrorBlock extends StatelessWidget {
                   gradient: colors.accentGradient,
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(12),
-                    onTap: onRetry,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 28),
-                      child: Center(
-                        child: Text(
-                          'Retry',
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w800,
-                            color: colors.buttonText,
-                          ),
+                child: AnimatedTap(
+                  borderRadius: 12,
+                  onTap: onRetry,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 28),
+                    child: Center(
+                      child: Text(
+                        'Retry',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w800,
+                          color: colors.buttonText,
                         ),
                       ),
                     ),

@@ -7,6 +7,7 @@ import '../../../services/store_service.dart';
 import '../../../services/theme/theme_manager.dart';
 import '../../../widgets/ratings/rating_sheet.dart';
 import 'app_screen_helpers.dart';
+import '../../../services/installer/store_update_service.dart';
 
 class AppScreenHeader extends StatelessWidget {
   const AppScreenHeader({super.key, required this.app});
@@ -68,11 +69,12 @@ class AppScreenHeader extends StatelessWidget {
 class AppScreenLargeIcon extends StatelessWidget {
   const AppScreenLargeIcon({super.key, required this.iconUrl});
 
-  final String iconUrl;
+  final String? iconUrl;
 
   @override
   Widget build(BuildContext context) {
     final colors = SafeHavenTheme.of(context);
+    final url = iconUrl?.trim();
 
     return Container(
       width: 96,
@@ -83,11 +85,14 @@ class AppScreenLargeIcon extends StatelessWidget {
         border: Border.all(color: colors.border),
       ),
       clipBehavior: Clip.antiAlias,
-      child: iconUrl.isEmpty
+      child: url == null || url.isEmpty
           ? null
           : Image.network(
-        iconUrl,
+        url,
         fit: BoxFit.cover,
+        cacheWidth: 240,
+        cacheHeight: 240,
+        filterQuality: FilterQuality.medium,
         errorBuilder: (_, __, ___) => const SizedBox.shrink(),
         loadingBuilder: (_, child, loadingProgress) {
           if (loadingProgress == null) return child;
@@ -234,24 +239,35 @@ class _AppScreenInstallButtonState extends State<AppScreenInstallButton>
   bool _paused = false;
   bool _checkingPackage = true;
   double _progress = 0;
-  InstalledPackageState _packageState = const InstalledPackageState(
-    installed: false,
-    versionCode: 0,
-  );
+  double _lastPaintedProgress = -1;
+  int _packageCheckRequestId = 0;
+  StoreUpdateCheck? _updateCheck;
 
-  bool get _hasVersion => widget.app.latestVersion != null;
+  bool get _hasVersion => widget.app.versions.isNotEmpty;
 
-  bool get _installed => _packageState.installed;
+  bool get _installed => _updateCheck?.installed ?? false;
 
-  bool get _hasUpdate => _packageState.canUpdateTo(widget.app.latestVersion);
+  bool get _hasUpdate => _updateCheck?.canUpdate ?? false;
+
+  StoreVersion? get _latestVersion => _updateCheck?.latestVersion;
 
   String get _primaryLabel {
     if (!_hasVersion) return 'No live APK yet';
-    if (_installing) return _paused ? 'Paused' : 'Downloading ${_percent}%';
+    if (_installing) return _paused ? 'Paused' : 'Downloading $_percent%';
     if (_checkingPackage) return 'Checking';
-    if (!_installed) return 'Install';
-    if (_hasUpdate) return 'Update';
-    return 'Open';
+
+    switch (_updateCheck?.status) {
+      case StoreUpdateStatus.notInstalled:
+        return 'Install';
+      case StoreUpdateStatus.updateAvailable:
+        return 'Update';
+      case StoreUpdateStatus.current:
+      case StoreUpdateStatus.installedNewerThanStore:
+        return 'Open';
+      case StoreUpdateStatus.missingStoreVersion:
+      case null:
+        return 'Unavailable';
+    }
   }
 
   int get _percent => (_progress * 100).clamp(0, 100).round();
@@ -287,29 +303,33 @@ class _AppScreenInstallButtonState extends State<AppScreenInstallButton>
   }
 
   Future<void> _loadPackageState({bool showChecking = false}) async {
+    final requestId = ++_packageCheckRequestId;
+
     if (showChecking && mounted) {
       setState(() => _checkingPackage = true);
     }
 
     try {
-      final state = await ApkInstallService.instance.getPackageState(
-        packageName: widget.app.packageName,
-      );
+      final check = await StoreUpdateService.instance.checkApp(widget.app);
 
-      if (!mounted) return;
+      if (!mounted || requestId != _packageCheckRequestId) return;
 
-      final changed = _packageState.installed != state.installed ||
-          _packageState.versionCode != state.versionCode ||
+      final oldCheck = _updateCheck;
+      final changed = oldCheck == null ||
+          oldCheck.status != check.status ||
+          oldCheck.installedVersionCode != check.installedVersionCode ||
+          oldCheck.installedVersionName != check.installedVersionName ||
+          oldCheck.latestVersionCode != check.latestVersionCode ||
           _checkingPackage;
 
       if (!changed) return;
 
       setState(() {
-        _packageState = state;
+        _updateCheck = check;
         _checkingPackage = false;
       });
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || requestId != _packageCheckRequestId) return;
 
       if (_checkingPackage) {
         setState(() => _checkingPackage = false);
@@ -320,12 +340,18 @@ class _AppScreenInstallButtonState extends State<AppScreenInstallButton>
   Future<void> _primaryAction() async {
     if (!_hasVersion || _installing || _checkingPackage) return;
 
-    if (_installed && !_hasUpdate) {
+    final status = _updateCheck?.status;
+
+    if (status == StoreUpdateStatus.current ||
+        status == StoreUpdateStatus.installedNewerThanStore) {
       await _openInstalledApp();
       return;
     }
 
-    await _install();
+    if (status == StoreUpdateStatus.notInstalled ||
+        status == StoreUpdateStatus.updateAvailable) {
+      await _install();
+    }
   }
 
   Future<void> _openInstalledApp() async {
@@ -362,10 +388,14 @@ class _AppScreenInstallButtonState extends State<AppScreenInstallButton>
   }
 
   Future<void> _install() async {
+    final version = _latestVersion ?? widget.app.latestVersion;
+    if (version == null) return;
+
     setState(() {
       _installing = true;
       _paused = false;
       _progress = 0;
+      _lastPaintedProgress = -1;
     });
 
     try {
@@ -373,7 +403,17 @@ class _AppScreenInstallButtonState extends State<AppScreenInstallButton>
         app: widget.app,
         onProgress: (value) {
           if (!mounted) return;
-          setState(() => _progress = value.clamp(0, 1).toDouble());
+
+          final nextProgress = value.clamp(0, 1).toDouble();
+          final changedEnough =
+              (nextProgress - _lastPaintedProgress).abs() >= 0.01 ||
+                  nextProgress == 0 ||
+                  nextProgress == 1;
+
+          if (!changedEnough) return;
+
+          _lastPaintedProgress = nextProgress;
+          setState(() => _progress = nextProgress);
         },
       );
     } on PlatformException catch (e) {
@@ -399,10 +439,12 @@ class _AppScreenInstallButtonState extends State<AppScreenInstallButton>
       );
     } finally {
       if (!mounted) return;
+
       setState(() {
         _installing = false;
         _paused = false;
       });
+
       await _loadPackageState();
     }
   }
@@ -428,6 +470,7 @@ class _AppScreenInstallButtonState extends State<AppScreenInstallButton>
       _installing = false;
       _paused = false;
       _progress = 0;
+      _lastPaintedProgress = -1;
     });
 
     try {
@@ -696,7 +739,7 @@ class AppScreenPreviewSection extends StatelessWidget {
     final shots = app.screenshots
         .map((s) => s.trim())
         .where((s) => s.isNotEmpty)
-        .toList();
+        .toList(growable: false);
 
     if (shots.isEmpty) {
       return const SizedBox.shrink();
@@ -723,6 +766,9 @@ class AppScreenPreviewSection extends StatelessWidget {
               child: Image.network(
                 shots[index],
                 fit: BoxFit.cover,
+                cacheWidth: 360,
+                cacheHeight: 680,
+                filterQuality: FilterQuality.medium,
                 errorBuilder: (_, __, ___) => const SizedBox.shrink(),
                 loadingBuilder: (_, child, loadingProgress) {
                   if (loadingProgress == null) return child;
@@ -742,20 +788,31 @@ class AppScreenAboutSection extends StatelessWidget {
 
   final PublicStoreApp app;
 
-  String get _aboutText {
-    String normalize(String s) => s
-        .replaceAll(r'\n', '\n')
-        .replaceAll(r'\r', '')
-        .trim();
+  String _normalize(String s) => s
+      .replaceAll(r'\n', '\n')
+      .replaceAll(r'\r', '')
+      .trim();
 
-    final description = normalize(app.description);
+  String get _shortText {
+    final summary = _normalize(app.summary);
+    if (summary.isNotEmpty) return summary;
+
+    return 'No short description provided.';
+  }
+
+  String get _fullText {
+    final description = _normalize(app.description);
     if (description.isNotEmpty) return description;
-    return normalize(app.displaySummary);
+
+    final summary = _normalize(app.summary);
+    if (summary.isNotEmpty) return summary;
+
+    return '';
   }
 
   void _showFull(BuildContext context) {
     final colors = SafeHavenTheme.of(context);
-    final aboutText = _aboutText;
+    final fullText = _fullText;
 
     showDialog(
       context: context,
@@ -786,16 +843,22 @@ class AppScreenAboutSection extends StatelessWidget {
                 child: SingleChildScrollView(
                   padding: const EdgeInsets.fromLTRB(24, 0, 24, 28),
                   child: MarkdownBody(
-                    data: aboutText.isNotEmpty
-                        ? aboutText
+                    data: fullText.isNotEmpty
+                        ? fullText
                         : 'No description provided.',
                     selectable: true,
+                    softLineBreak: true,
                     styleSheet: markdownStyle(context),
                     onTapLink: (_, href, __) async {
                       if (href == null || href.trim().isEmpty) return;
+
                       final uri = Uri.tryParse(href.trim());
                       if (uri == null) return;
-                      await launchUrl(uri, mode: LaunchMode.externalApplication);
+
+                      await launchUrl(
+                        uri,
+                        mode: LaunchMode.externalApplication,
+                      );
                     },
                   ),
                 ),
@@ -810,7 +873,7 @@ class AppScreenAboutSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = SafeHavenTheme.of(context);
-    final aboutText = _aboutText;
+    final shortText = _shortText;
 
     return AppScreenSection(
       title: 'About this app',
@@ -818,9 +881,7 @@ class AppScreenAboutSection extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 18),
         child: Text(
-          aboutText.isNotEmpty
-              ? stripMarkdown(aboutText)
-              : 'No description provided.',
+          shortText,
           maxLines: 3,
           overflow: TextOverflow.ellipsis,
           style: TextStyle(
@@ -1035,8 +1096,7 @@ class AppScreenExpandableSection extends StatefulWidget {
       _AppScreenExpandableSectionState();
 }
 
-class _AppScreenExpandableSectionState extends State<AppScreenExpandableSection>
-    with SingleTickerProviderStateMixin {
+class _AppScreenExpandableSectionState extends State<AppScreenExpandableSection> {
   late bool _expanded;
 
   @override

@@ -10,14 +10,28 @@ class InstalledPackageState {
   const InstalledPackageState({
     required this.installed,
     required this.versionCode,
+    this.versionName,
+    this.signingCertificateSha256,
   });
 
   final bool installed;
   final int versionCode;
+  final String? versionName;
+  final String? signingCertificateSha256;
 
   bool canUpdateTo(StoreVersion? version) {
     if (!installed || version == null) return false;
     return version.versionCode > versionCode;
+  }
+
+  bool isSameVersionAs(StoreVersion? version) {
+    if (!installed || version == null) return false;
+    return version.versionCode == versionCode;
+  }
+
+  bool isNewerThan(StoreVersion? version) {
+    if (!installed || version == null) return false;
+    return versionCode > version.versionCode;
   }
 }
 
@@ -54,6 +68,8 @@ class ApkInstallService {
     return InstalledPackageState(
       installed: result['installed'] == true,
       versionCode: _asInt(result['versionCode']),
+      versionName: _asString(result['versionName']),
+      signingCertificateSha256: _asString(result['signingCertificateSha256']),
     );
   }
 
@@ -250,6 +266,12 @@ class ApkInstallService {
     try {
       await entity.delete(recursive: true);
     } catch (_) {}
+  }
+
+  String? _asString(Object? value) {
+    final text = value?.toString().trim();
+    if (text == null || text.isEmpty) return null;
+    return text;
   }
 
   int _asInt(Object? value) {

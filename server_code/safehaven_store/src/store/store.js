@@ -3,6 +3,7 @@ import {
   getStoreAppById,
   getStoreAppsByDeveloper,
   getAllStoreApps,
+  getAllLiveApps,
   createStoreApp,
   setAppRepoVerified,
   setAppSigningKeyHash,
@@ -50,9 +51,17 @@ import {
 } from "./storage.js";
 
 import { handleRatingsRoute, handleAdminRatingsRoute } from "./modules/ratings.js";
-import { runGitHubBootstrapImport } from "./modules/git_store_job.js";
+import {
+  runGitHubBootstrapImport,
+  runGitHubDirectImport,
+  runGitHubReadmeSweep,
+} from "./modules/git_store_job.js";
 
-export { runGitHubBootstrapImport };
+export {
+  runGitHubBootstrapImport,
+  runGitHubDirectImport,
+  runGitHubReadmeSweep,
+};
 
 const nowUnix = () => Math.floor(Date.now() / 1000);
 
@@ -204,14 +213,74 @@ const saveScannerIcon = async (env, appId, packageName, body) => {
 
   if (!bytes.byteLength || bytes.byteLength > 2 * 1024 * 1024) return;
 
+  const app = await getStoreAppById(env, appId);
+  const existingScreenshots = parseScreenshots(app?.screenshots_json);
+
   const iconKey = await putImageObject(env, packageName, "icon", bytes, contentType);
 
   await setAppImages(env, appId, {
     iconKey,
-    screenshotKeys: [],
+    screenshotKeys: existingScreenshots,
   });
 };
 
+const getLiveSubmissionForRescan = async (env, packageName, versionCode) => {
+  const pkg = (packageName || "").toString().trim();
+  const vc  = Number(versionCode);
+
+  if (!pkg || !Number.isFinite(vc)) return null;
+
+  return env.api_control_db
+    .prepare(
+      `SELECT
+         ss.*,
+         sa.id AS app_id,
+         sa.package_name AS app_package_name,
+         sa.signing_key_hash AS stored_signing_key_hash,
+         sa.auto_tracked AS app_auto_tracked
+       FROM store_submissions ss
+       JOIN store_apps sa ON sa.id = ss.app_id
+       WHERE sa.package_name = ?1
+         AND ss.version_code = ?2
+         AND ss.status = 'live'
+         AND sa.status = 'active'
+       LIMIT 1`
+    )
+    .bind(pkg, vc)
+    .first();
+};
+
+const recordRescanResult = async (env, submissionId, input) => {
+  const clean      = (submissionId || "").toString().trim();
+  const passed     = input.passed ? 1 : 0;
+  const scanResult = typeof input.detail === "object" ? JSON.stringify(input.detail) : (input.detail || null);
+  const apkSha256  = (input.apkSha256 || "").toString().trim() || null;
+  const apkSize    = Number.isFinite(Number(input.apkSize)) ? Number(input.apkSize) : null;
+  const scannedAt  = Number.isFinite(Number(input.scannedAt)) ? Number(input.scannedAt) : nowUnix();
+
+  if (!clean) return null;
+
+  await env.api_control_db
+    .prepare(
+      `UPDATE store_submissions
+       SET scan_passed = ?2,
+           scan_result = ?3,
+           apk_sha256 = ?4,
+           apk_size = ?5,
+           scanned_at = ?6,
+           updated_at = ?6
+       WHERE id = ?1
+         AND status = 'live'`
+    )
+    .bind(clean, passed, scanResult, apkSha256, apkSize, scannedAt)
+    .run();
+
+  return {
+    apkSha256,
+    apkSize,
+    scannedAt,
+  };
+};
 
 const createUnclaimedStoreApp = async (env, input) => {
   const packageName = (input.packageName || "").toString().trim();
@@ -568,6 +637,89 @@ export async function handleStore(request, env, auth) {
       return json({ submissions: withUrls });
     }
 
+        if (method === "GET" && path === "/internal/store/rescan-targets") {
+      if (!isScannerAuth(env, request)) return unauthorized();
+
+      const liveApps = await getAllLiveApps(env);
+      const targets = await Promise.all(
+        liveApps
+          .filter((row) => row.package_name && Number.isFinite(Number(row.version_code)))
+          .map(async (row) => {
+            const apkPath = row.apk_key || apkKey(row.package_name, row.version_code);
+
+            return {
+              packageName: row.package_name,
+              versionName: row.version_name || null,
+              versionCode: Number(row.version_code),
+              apkPath,
+              apkSize: row.apk_size || null,
+              apkSha256: row.apk_sha256 || null,
+              scannedAt: row.scanned_at || null,
+              downloadUrl: await getPresignedDownloadUrl(env, apkPath),
+            };
+          })
+      );
+
+      return json({ targets });
+    }
+
+    if (method === "POST" && path === "/internal/store/rescan-result") {
+      if (!isScannerAuth(env, request)) return unauthorized();
+
+      const body = await readJson(request);
+      if (!body) return badRequest("json_required");
+
+      const packageName = (body.packageName || "").toString().trim();
+      const versionCode = Number(body.versionCode);
+
+      if (!packageName) return badRequest("missing_packageName");
+      if (!Number.isFinite(versionCode)) return badRequest("invalid_versionCode");
+
+      const submission = await getLiveSubmissionForRescan(env, packageName, versionCode);
+      if (!submission) return notFound();
+
+      const update = await recordRescanResult(env, submission.id, {
+        passed:    !!body.passed,
+        detail:    body.detail    || null,
+        apkSha256: body.apkSha256 || null,
+        apkSize:   body.apkSize   || null,
+        scannedAt: body.scannedAt || null,
+      });
+
+      const app = await getStoreAppById(env, submission.app_id);
+
+      if (body.signingKeyHash && app && !app.signing_key_hash) {
+        await setAppSigningKeyHash(env, app.id, body.signingKeyHash);
+      }
+
+      if (body.signingKeyHash && app && app.auto_tracked && app.signing_key_hash) {
+        const observedKey = (body.signingKeyHash || "").toString().trim().toLowerCase();
+        const storedKey   = (app.signing_key_hash || "").toString().trim().toLowerCase();
+
+        if (observedKey && storedKey && observedKey !== storedKey) {
+          await setAppSigningFlag(env, app.id, "signing_key_changed");
+        }
+      }
+
+      if (app) {
+        await saveScannerIcon(env, app.id, app.package_name, body);
+
+        const updatedApp = await getStoreAppById(env, app.id);
+        if (updatedApp && updatedApp.status === APP_STATUS.ACTIVE) {
+          await addOrUpdateApp(env, buildAppEntry(env, updatedApp));
+          await addVersionToApp(env, updatedApp.package_name, buildVersionEntry({
+            ...submission,
+            package_name: updatedApp.package_name,
+            apk_sha256: update?.apkSha256,
+            apk_size: update?.apkSize,
+            scanned_at: update?.scannedAt,
+          }));
+        }
+      }
+
+      return json({ ok: true });
+    }
+
     if (method === "GET" && path.match(/^\/store\/apps\/[^/]+$/)) {
       const me = await requireUser();
       if (!me) return unauthorized();
@@ -863,6 +1015,50 @@ export async function handleStore(request, env, auth) {
 
       const result = await runGitHubBootstrapImport(env);
       return json({ ok: true, result });
+    }
+
+    if (method === "POST" && path === "/admin/store/readme-sweep") {
+      const me = await requireUser();
+      if (!me) return unauthorized();
+      if (!me.admin) return forbidden();
+
+      const body = await readJson(request);
+      const rawLimit = Number(body?.limit ?? 50);
+      const limit = Number.isFinite(rawLimit)
+        ? Math.max(1, Math.min(Math.floor(rawLimit), 100))
+        : 100;
+
+      const result = await runGitHubReadmeSweep(env, limit);
+      return json({ ok: true, result });
+    }
+
+    if (method === "POST" && path === "/admin/store/import-repo") {
+      const me = await requireUser();
+      if (!me) return unauthorized();
+      if (!me.admin) return forbidden();
+
+      const body = await readJson(request);
+      if (!body) return badRequest("json_required");
+
+      const repoUrl = (body.repoUrl || "").toString().trim();
+      if (!repoUrl) return badRequest("repoUrl_required");
+
+      const result = await runGitHubDirectImport(env, {
+        repoUrl,
+        name: body.name,
+        summary: body.summary,
+        description: body.description,
+        iconUrl: body.iconUrl,
+        assetMatch: body.assetMatch,
+        preferredAbi: body.preferredAbi || "arm64-v8a",
+        adminImport: true,
+      });
+
+      if (result?.skipped && !result?.imported) {
+        return json({ ok: false, result }, 422);
+      }
+
+      return json({ ok: true, result }, 201);
     }
 
     if (method === "POST" && path.match(/^\/admin\/store\/submissions\/[^/]+\/approve$/)) {
