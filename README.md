@@ -105,7 +105,7 @@ flutter build appbundle --release
 
 ## Current status
 
-SafeHaven is still early. The Android client, backend, review flow, import system, and scanning pipeline may change as the project develops.
+SafeHaven is still in early development.
 
 ## Project links
 
