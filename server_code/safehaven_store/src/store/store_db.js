@@ -79,7 +79,7 @@ export async function createStoreApp(env, input) {
 
   await db(env)
     .prepare(
-      "INSERT INTO store_apps (id, developer_id, package_name, name, summary, description, repo_url, repo_token, repo_verified, trust_level, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10, ?11, ?11)"
+      "INSERT INTO store_apps (id, developer_id, package_name, name, summary, description, repo_url, repo_token, repo_verified, trust_level, status, created_at, updated_at, upstream) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10, ?11, ?11, NULL)"
     )
     .bind(
       id, developerId, packageName, name, summary, description,

@@ -41,6 +41,7 @@ import {
   headStagingObject,
   copyToProduction,
   copyStagingToProduction,
+  promoteStagingToProduction,
   putImageObject,
   deleteStagingApk,
   apkKey,
@@ -48,23 +49,16 @@ import {
   imageKey,
   IMAGE_SLOTS,
   CATEGORIES,
+  getChangelog,
+  putIndexWithChangelog,
 } from "./storage.js";
 
 import { handleRatingsRoute, handleAdminRatingsRoute } from "./modules/ratings.js";
-import {
-  runGitHubBootstrapImport,
-  runGitHubDirectImport,
-  runGitHubReadmeSweep,
-} from "./modules/git_store_job.js";
+import { runGitHubBootstrapImport, runGitHubDirectImport, runGitHubReadmeSweep } from "./modules/git_store_job.js";
+import { runFdroidSync, importOrUpdateFdroidApp, runFdroidCronJob } from "./modules/fdroid_store_job.js";
 
-export {
-  runGitHubBootstrapImport,
-  runGitHubDirectImport,
-  runGitHubReadmeSweep,
-};
-
+export { runGitHubBootstrapImport, runGitHubDirectImport, runGitHubReadmeSweep, runFdroidSync, runFdroidCronJob };
 const nowUnix = () => Math.floor(Date.now() / 1000);
-
 const cryptoRandomHex = (bytes) => {
   const a = new Uint8Array(bytes);
   crypto.getRandomValues(a);
@@ -142,6 +136,7 @@ const buildAppEntry = (env, app) => ({
   repoUrl:      app.repo_url,
   trustLevel:   app.trust_level,
   category:     app.category    || null,
+  upstream:     app.upstream    || null,
   iconUrl:      app.icon_key ? publicImageUrl(env, app.icon_key) : null,
   screenshots:  parseScreenshots(app.screenshots_json).map((k) => publicImageUrl(env, k)),
 });
@@ -149,7 +144,7 @@ const buildAppEntry = (env, app) => ({
 const buildVersionEntry = (submission) => ({
   versionName: submission.version_name,
   versionCode: submission.version_code,
-  apkPath:     apkKey(submission.package_name, submission.version_code),
+  apkPath:     submission.apk_key || apkKey(submission.package_name, submission.version_code),
   apkSize:     submission.apk_size   || null,
   sha256:      submission.apk_sha256 || null,
   scannedAt:   submission.scanned_at || null,
@@ -157,7 +152,7 @@ const buildVersionEntry = (submission) => ({
 });
 
 const approveAndPublish = async (env, submission, reviewedBy = null) => {
-  const { id, version_code, app_id } = submission;
+  const { id, version_code, app_id, staging_key } = submission;
 
   const app = await getStoreAppById(env, app_id);
   if (!app) throw new Error("app_not_found");
@@ -165,12 +160,10 @@ const approveAndPublish = async (env, submission, reviewedBy = null) => {
   const finalPackageName = (app.package_name || submission.package_name || "").toString().trim();
   if (!finalPackageName) throw new Error("package_name_missing");
 
-  await copyStagingToProduction(env, submission.package_name, finalPackageName, version_code);
-
   const prodKey = apkKey(finalPackageName, version_code);
 
+  await promoteStagingToProduction(env, staging_key, prodKey);
   await approveSubmission(env, id, prodKey, reviewedBy);
-  await deleteStagingApk(env, submission.package_name, version_code);
 
   const updatedSubmission = {
     ...submission,
@@ -214,6 +207,11 @@ const saveScannerIcon = async (env, appId, packageName, body) => {
   if (!bytes.byteLength || bytes.byteLength > 2 * 1024 * 1024) return;
 
   const app = await getStoreAppById(env, appId);
+  
+  if (app && app.icon_key) {
+    return; 
+  }
+
   const existingScreenshots = parseScreenshots(app?.screenshots_json);
 
   const iconKey = await putImageObject(env, packageName, "icon", bytes, contentType);
@@ -314,8 +312,8 @@ const createUnclaimedStoreApp = async (env, input) => {
       `INSERT INTO store_apps
         (id, developer_id, package_name, name, summary, description,
          repo_url, repo_token, repo_verified, trust_level, status,
-         claimed, auto_tracked, created_at, updated_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '', 0, 'unverified', ?8, 0, 1, ?9, ?9)`
+         claimed, auto_tracked, created_at, updated_at, upstream)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '', 0, 'unverified', ?8, 0, 1, ?9, ?9, NULL)`
     )
     .bind(id, COMMUNITY_DEVELOPER_ID, packageName, name, summary, description, repoUrl, APP_STATUS.ACTIVE, now)
     .run();
@@ -348,7 +346,7 @@ const setAppLastRepoCheck = async (env, appId) => {
 const setAppClaimed = async (env, appId, developerId) => {
   await env.api_control_db
     .prepare(
-      "UPDATE store_apps SET claimed = 1, developer_id = ?2, trust_level = ?3, updated_at = ?4 WHERE id = ?1 AND claimed = 0"
+      "UPDATE store_apps SET claimed = 1, auto_tracked = 0, developer_id = ?2, trust_level = ?3, updated_at = ?4 WHERE id = ?1"
     )
     .bind((appId || "").toString().trim(), developerId, TRUST_LEVEL.VERIFIED_SOURCE, nowUnix())
     .run();
@@ -494,8 +492,6 @@ export async function runUnclaimedRepoPolls(env) {
   return results;
 }
 
-// ── Auto approvals ────────────────────────────────────────────────────────────
-
 export async function runStoreAutoApprovals(env) {
   const due = await getSubmissionsDueForAutoApproval(env);
   for (const submission of due) {
@@ -511,8 +507,6 @@ export async function runStoreAutoApprovals(env) {
   }
   return due.length;
 }
-
-// ── Main handler ──────────────────────────────────────────────────────────────
 
 export async function handleStore(request, env, auth) {
   const url    = new URL(request.url);
@@ -542,9 +536,60 @@ export async function handleStore(request, env, auth) {
 
   try {
 
+    if (method === "GET" && path === "/store/sync") {
+      const since = Number(url.searchParams.get("since") || 0);
+      const now = nowUnix();
+      const SEVEN_DAYS_SEC = 7 * 24 * 60 * 60;
+
+      if (!since || now - since > SEVEN_DAYS_SEC) {
+        return json({
+          action: "full",
+          url: "/store/index.json"
+        });
+      }
+
+      let changelog;
+      try {
+        changelog = await getChangelog(env);
+      } catch {
+        changelog = { events: [] };
+      }
+
+      const finalUpdates = new Map();
+      const finalRemoves = new Set();
+      let latestTimestamp = since;
+
+      for (const event of changelog.events) {
+        if (event.timestamp > since) {
+          latestTimestamp = Math.max(latestTimestamp, event.timestamp);
+          
+          for (const pkg of event.removes) {
+            finalRemoves.add(pkg);
+            finalUpdates.delete(pkg);
+          }
+          
+          for (const app of event.updates) {
+            finalUpdates.set(app.packageName, app);
+            finalRemoves.delete(app.packageName);
+          }
+        }
+      }
+
+      return json({
+        action: "patch",
+        timestamp: latestTimestamp,
+        updates: Array.from(finalUpdates.values()),
+        removes: Array.from(finalRemoves)
+      });
+    }
+
     if (method === "GET" && path === "/store/index.json") {
       const index = await getIndex(env);
-      return new Response(JSON.stringify(index), {
+      const filtered = {
+        ...index,
+        apps: (index.apps || []).filter((a) => Array.isArray(a.versions) && a.versions.length > 0),
+      };
+      return new Response(JSON.stringify(filtered), {
         headers: {
           "content-type":  "application/json; charset=utf-8",
           "cache-control": "public, max-age=60",
@@ -578,6 +623,110 @@ export async function handleStore(request, env, auth) {
 
     if (method === "GET" && path === "/store/categories") {
       return json({ categories: CATEGORIES });
+    }
+
+if (method === "POST" && path === "/admin/store/fdroid-index-chunk") {
+  const provided = (request.headers.get("authorization") || "").trim();
+  if (!provided || provided !== (env.SH_ADMIN_SECRET || "").trim()) return unauthorized();
+
+  const body = await readJson(request);
+  if (!body) return badRequest("json_required");
+
+  const type = (body.type || "").toString().trim();
+
+  if (type === "repo") {
+    const repoData = body.data || {};
+    const totalApps = Number(body.totalApps || 0);
+    const totalChunks = Number(body.totalChunks || 0);
+
+    await env.api_control_db
+      .prepare("INSERT OR REPLACE INTO sync_state (key, value) VALUES (?1, ?2)")
+      .bind(
+        "fdroid_chunk_state",
+        JSON.stringify({
+          repo: repoData,
+          totalApps,
+          totalChunks,
+          receivedChunks: [],
+          processedApps: 0,
+          startedAt: nowUnix(),
+        })
+      )
+      .run();
+
+    return json({ ok: true, message: `Ready to receive ${totalChunks} chunks with ${totalApps} apps` });
+  }
+
+  if (type === "apps") {
+    const chunkIndex = Number(body.chunkIndex || 0);
+    const apps = Array.isArray(body.apps) ? body.apps : [];
+    const totalChunks = Number(body.totalChunks || 0);
+
+    const stateRow = await env.api_control_db
+      .prepare("SELECT value FROM sync_state WHERE key = ?1")
+      .bind("fdroid_chunk_state")
+      .first();
+
+    if (!stateRow) return badRequest("repo_metadata_not_initialized");
+
+    const state = JSON.parse(stateRow.value);
+
+    if (state.receivedChunks.includes(chunkIndex)) {
+      return json({ ok: true, skipped: true, message: `Chunk ${chunkIndex} already processed` });
+    }
+
+    let imported = 0;
+    let updated = 0;
+    let skipped = 0;
+    const errors = [];
+
+    for (const app of apps) {
+      try {
+        const outcome = await importOrUpdateFdroidApp(env, app);
+        if (outcome.imported) {
+          imported++;
+          if (!outcome.isNew) updated++;
+        } else if (outcome.skipped) {
+          skipped++;
+        }
+      } catch (e) {
+        errors.push({ packageName: app.packageName, error: String(e?.message || e) });
+      }
+    }
+
+    state.receivedChunks.push(chunkIndex);
+    state.processedApps += apps.length;
+
+    await env.api_control_db
+      .prepare("UPDATE sync_state SET value = ?1 WHERE key = ?2")
+      .bind(JSON.stringify(state), "fdroid_chunk_state")
+      .run();
+
+    return json({
+      ok: true,
+      chunkIndex,
+      appsReceived: apps.length,
+      imported,
+      updated,
+      skipped,
+      errors: errors.slice(0, 5),
+      totalReceived: state.receivedChunks.length,
+      totalChunks,
+    });
+  }
+
+  return badRequest("invalid_chunk_type");
+}
+
+    if (method === "PUT" && path === "/admin/store/fdroid-index") {
+      const provided = (request.headers.get("authorization") || "").trim();
+      if (!provided || provided !== (env.SH_ADMIN_SECRET || "").trim()) return unauthorized();
+      const body = await request.arrayBuffer();
+      if (!body.byteLength) return badRequest("empty_body");
+      await env.SH_BUCKET.put("fdroid/index-v1.json", body, {
+        httpMetadata: { contentType: "application/json" },
+      });
+      return json({ ok: true });
     }
 
     if (method === "POST" && path === "/store/apps") {
@@ -637,7 +786,7 @@ export async function handleStore(request, env, auth) {
       return json({ submissions: withUrls });
     }
 
-        if (method === "GET" && path === "/internal/store/rescan-targets") {
+    if (method === "GET" && path === "/internal/store/rescan-targets") {
       if (!isScannerAuth(env, request)) return unauthorized();
 
       const liveApps = await getAllLiveApps(env);
@@ -663,7 +812,7 @@ export async function handleStore(request, env, auth) {
       return json({ targets });
     }
 
-    if (method === "POST" && path === "/internal/store/rescan-result") {
+if (method === "POST" && path === "/internal/store/rescan-result") {
       if (!isScannerAuth(env, request)) return unauthorized();
 
       const body = await readJson(request);
@@ -677,6 +826,23 @@ export async function handleStore(request, env, auth) {
 
       const submission = await getLiveSubmissionForRescan(env, packageName, versionCode);
       if (!submission) return notFound();
+
+      const realVersionCode = Number(body.manifestVersionCode);
+      const realVersionName = body.manifestVersionName ? String(body.manifestVersionName).trim() : null;
+
+      let finalVersionCode = submission.version_code;
+      let finalVersionName = submission.version_name;
+      let versionChanged = false;
+
+      if (Number.isFinite(realVersionCode) && realVersionCode > 0 && realVersionCode !== submission.version_code) {
+        await env.api_control_db.prepare(
+          "UPDATE store_submissions SET version_code = ?1, version_name = COALESCE(?2, version_name) WHERE id = ?3"
+        ).bind(realVersionCode, realVersionName, submission.id).run();
+
+        finalVersionCode = realVersionCode;
+        if (realVersionName) finalVersionName = realVersionName;
+        versionChanged = true;
+      }
 
       const update = await recordRescanResult(env, submission.id, {
         passed:    !!body.passed,
@@ -706,10 +872,22 @@ export async function handleStore(request, env, auth) {
 
         const updatedApp = await getStoreAppById(env, app.id);
         if (updatedApp && updatedApp.status === APP_STATUS.ACTIVE) {
+          
+          if (versionChanged) {
+            const index = await getIndex(env);
+            const idxApp = index.apps.find((a) => a.packageName === updatedApp.package_name);
+            if (idxApp && idxApp.versions) {
+              idxApp.versions = idxApp.versions.filter((v) => v.versionCode !== submission.version_code);
+              await putIndexWithChangelog(env, index);
+            }
+          }
+
           await addOrUpdateApp(env, buildAppEntry(env, updatedApp));
           await addVersionToApp(env, updatedApp.package_name, buildVersionEntry({
             ...submission,
             package_name: updatedApp.package_name,
+            version_code: finalVersionCode,
+            version_name: finalVersionName,
             apk_sha256: update?.apkSha256,
             apk_size: update?.apkSize,
             scanned_at: update?.scannedAt,
@@ -855,7 +1033,13 @@ export async function handleStore(request, env, auth) {
 
       const updatedApp = await getStoreAppById(env, appId);
       if (updatedApp && updatedApp.status === APP_STATUS.ACTIVE) {
-        await addOrUpdateApp(env, buildAppEntry(env, updatedApp));
+        const liveSubmission = await env.api_control_db
+          .prepare("SELECT id FROM store_submissions WHERE app_id = ?1 AND status = 'live' LIMIT 1")
+          .bind(appId)
+          .first();
+        if (liveSubmission) {
+          await addOrUpdateApp(env, buildAppEntry(env, updatedApp));
+        }
       }
       return json({ ok: true });
     }
@@ -937,6 +1121,20 @@ export async function handleStore(request, env, auth) {
         }
       }
 
+      const realVersionCode = Number(body.manifestVersionCode);
+      const realVersionName = body.manifestVersionName ? String(body.manifestVersionName).trim() : null;
+
+      if (Number.isFinite(realVersionCode) && realVersionCode > 0) {
+        await env.api_control_db.prepare(
+          "UPDATE store_submissions SET version_code = ?1, version_name = COALESCE(?2, version_name) WHERE id = ?3"
+        ).bind(realVersionCode, realVersionName, submissionId).run();
+
+        submission.version_code = realVersionCode;
+        if (realVersionName) {
+          submission.version_name = realVersionName;
+        }
+      }
+
       {
         const observedPkg = (body.packageName || "").toString().trim();
         const appForPkg   = await getStoreAppById(env, submission.app_id);
@@ -993,7 +1191,7 @@ export async function handleStore(request, env, auth) {
       return json({ apps });
     }
 
-        if (method === "POST" && path === "/admin/store/clear-index") {
+    if (method === "POST" && path === "/admin/store/clear-index") {
       const me = await requireUser();
       if (!me) return unauthorized();
       if (!me.admin) return forbidden();
@@ -1014,6 +1212,15 @@ export async function handleStore(request, env, auth) {
       if (!me.admin) return forbidden();
 
       const result = await runGitHubBootstrapImport(env);
+      return json({ ok: true, result });
+    }
+
+    if (method === "POST" && path === "/admin/store/fdroid-sync") {
+      const me = await requireUser();
+      if (!me) return unauthorized();
+      if (!me.admin) return forbidden();
+
+      const result = await runFdroidSync(env);
       return json({ ok: true, result });
     }
 
@@ -1151,7 +1358,13 @@ export async function handleStore(request, env, auth) {
       if (status === APP_STATUS.ACTIVE) {
         const updatedApp = await getStoreAppById(env, appId);
         if (updatedApp) {
-          await addOrUpdateApp(env, buildAppEntry(env, updatedApp));
+          const liveSubmission = await env.api_control_db
+            .prepare("SELECT id FROM store_submissions WHERE app_id = ?1 AND status = 'live' LIMIT 1")
+            .bind(appId)
+            .first();
+          if (liveSubmission) {
+            await addOrUpdateApp(env, buildAppEntry(env, updatedApp));
+          }
         }
       }
 
@@ -1301,6 +1514,7 @@ export async function handleStore(request, env, auth) {
         trustLevel:    app.trust_level,
         signingFlag:   app.signing_flag || null,
         lastRepoCheck: app.last_repo_check || null,
+        upstream:      app.upstream || null,
       });
     }
 
@@ -1312,15 +1526,21 @@ export async function handleStore(request, env, auth) {
       const appId = path.replace("/store/track/", "").replace("/claim", "").trim();
       const app   = await getStoreAppById(env, appId);
       if (!app) return notFound();
-      if (app.claimed) return json({ error: "already_claimed" }, 409);
+
+      const isFdroid = app.upstream === "fdroid";
+
+      if (app.claimed && !isFdroid) return json({ error: "already_claimed" }, 409);
 
       const body = await readJson(request);
       if (!body) return badRequest("json_required");
 
       const providedHash = (body.signingKeyHash || "").toString().trim();
-      if (!providedHash)          return badRequest("signingKeyHash_required");
-      if (!app.signing_key_hash)  return json({ error: "no_signing_key_on_record_yet" }, 422);
-      if (app.signing_key_hash !== providedHash) return json({ error: "signing_key_mismatch" }, 403);
+      if (!providedHash) return badRequest("signingKeyHash_required");
+
+      if (!isFdroid) {
+        if (!app.signing_key_hash) return json({ error: "no_signing_key_on_record_yet" }, 422);
+        if (app.signing_key_hash !== providedHash) return json({ error: "signing_key_mismatch" }, 403);
+      }
 
       const gh = parseGitHubRepo(app.repo_url);
       if (!gh) return json({ error: "repo_not_verifiable" }, 422);
@@ -1335,7 +1555,50 @@ export async function handleStore(request, env, auth) {
 
       await setAppClaimed(env, appId, me.id);
       await setAppRepoVerified(env, appId, true);
+
+      if (isFdroid) {
+        await setAppSigningKeyHash(env, appId, providedHash);
+        await env.api_control_db.prepare("DELETE FROM store_submissions WHERE app_id = ?1").bind(appId).run();
+        await env.api_control_db.prepare("UPDATE store_apps SET upstream = NULL WHERE id = ?1").bind(appId).run();
+
+        const index = await getIndex(env);
+        const idxApp = index.apps.find(a => a.packageName === app.package_name);
+        if (idxApp) {
+          idxApp.versions = [];
+          idxApp.upstream = null;
+          await putIndexWithChangelog(env, index);
+        }
+      }
+
       return json({ ok: true, claimed: true });
+    }
+
+    if (method === "POST" && path.match(/^\/admin\/store\/apps\/[^/]+\/override-hash$/)) {
+      const me = await requireUser();
+      if (!me) return unauthorized();
+      if (!me.admin) return forbidden();
+
+      const appId = path.replace("/admin/store/apps/", "").replace("/override-hash", "").trim();
+      const body = await readJson(request);
+      if (!body) return badRequest("json_required");
+
+      const newHash = (body.newHash || "").toString().trim();
+      const reason = (body.reason || "").toString().trim();
+
+      if (!newHash) return badRequest("newHash_required");
+
+      const app = await getStoreAppById(env, appId);
+      if (!app) return notFound();
+
+      const oldHash = app.signing_key_hash || "";
+
+      await setAppSigningKeyHash(env, appId, newHash);
+      await env.api_control_db.prepare("UPDATE store_apps SET signing_flag = NULL WHERE id = ?1").bind(appId).run();
+      await env.api_control_db.prepare(
+        "INSERT INTO store_hash_history (app_id, old_hash, new_hash, reason, updated_by, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+      ).bind(appId, oldHash, newHash, reason, me.id, nowUnix()).run();
+
+      return json({ ok: true, oldHash, newHash });
     }
 
     const ratingsResponse = await handleRatingsRoute(request, env, path, method);

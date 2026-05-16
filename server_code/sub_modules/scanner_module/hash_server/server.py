@@ -6,7 +6,7 @@ import urllib.request
 from io import StringIO
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException
 
 BASE_DIR     = Path(__file__).resolve().parent
 RAW_DB_DIR   = BASE_DIR / "raw_database"
@@ -14,16 +14,10 @@ COMPILED_DIR = BASE_DIR / "compiled"
 HASH_DB      = COMPILED_DIR / "hashes.db"
 BAZAAR_OUT   = RAW_DB_DIR / "bazaar_recent_hashes.txt"
 
-SECRET          = os.getenv("CS_SECRET", "23JVO3ojo23oO3O423rrTR")
 BAZAAR_INTERVAL = int(os.getenv("BAZAAR_INTERVAL", str(60 * 60 * 2)))
 BAZAAR_URL      = "https://bazaar.abuse.ch/export/csv/recent/"
 
 app = FastAPI(title="SafeHaven Hash Server")
-
-
-def verify_key(key: str | None) -> None:
-    if key != SECRET:
-        raise HTTPException(status_code=401, detail="unauthorized")
 
 
 def _conn() -> sqlite3.Connection:
@@ -134,8 +128,7 @@ async def health() -> dict:
 
 
 @app.get("/check/{h}")
-async def check_hash(h: str, x_cs_key: str = Header(None)) -> dict:
-    verify_key(x_cs_key)
+async def check_hash(h: str) -> dict:
     conn = _conn()
     row = conn.execute("SELECT file_hash FROM hashes WHERE file_hash = ?", (h,)).fetchone()
     conn.close()
@@ -143,8 +136,7 @@ async def check_hash(h: str, x_cs_key: str = Header(None)) -> dict:
 
 
 @app.post("/add/{h}")
-async def add_hash(h: str, x_cs_key: str = Header(None)) -> dict:
-    verify_key(x_cs_key)
+async def add_hash(h: str) -> dict:
     conn = _conn()
     try:
         conn.execute("INSERT INTO hashes (file_hash) VALUES (?)", (h,))
@@ -157,8 +149,7 @@ async def add_hash(h: str, x_cs_key: str = Header(None)) -> dict:
 
 
 @app.post("/check_batch")
-async def check_batch(hashes: list[str], x_cs_key: str = Header(None)) -> dict:
-    verify_key(x_cs_key)
+async def check_batch(hashes: list[str]) -> dict:
     if not hashes:
         return {"found": []}
     placeholders = ",".join("?" for _ in hashes)

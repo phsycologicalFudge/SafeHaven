@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 enum SafeHavenThemeMode {
   light,
-  black,
+  dark,
 }
 
 class SafeHavenThemeManager extends ChangeNotifier {
@@ -11,19 +12,32 @@ class SafeHavenThemeManager extends ChangeNotifier {
   static final SafeHavenThemeManager instance = SafeHavenThemeManager._();
 
   SafeHavenThemeMode _mode = SafeHavenThemeMode.light;
+  bool _initialized = false;
 
   SafeHavenThemeMode get mode => _mode;
 
-  bool get isDark => _mode == SafeHavenThemeMode.black;
+  bool get isDark => _mode == SafeHavenThemeMode.dark;
 
-  void setMode(SafeHavenThemeMode mode) {
-    if (_mode == mode) return;
-    _mode = mode;
+  Future<void> init() async {
+    if (_initialized) return;
+    final prefs = await SharedPreferences.getInstance();
+    final isDarkPref = prefs.getBool('safehaven_is_dark') ?? false;
+    _mode = isDarkPref ? SafeHavenThemeMode.dark : SafeHavenThemeMode.light;
+    _initialized = true;
     notifyListeners();
   }
 
-  void toggle() {
-    setMode(isDark ? SafeHavenThemeMode.light : SafeHavenThemeMode.black);
+  Future<void> setMode(SafeHavenThemeMode mode) async {
+    if (_mode == mode) return;
+    _mode = mode;
+    notifyListeners();
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('safehaven_is_dark', isDark);
+  }
+
+  Future<void> toggle() async {
+    await setMode(isDark ? SafeHavenThemeMode.light : SafeHavenThemeMode.dark);
   }
 }
 
@@ -81,17 +95,17 @@ class SafeHavenTheme {
     surfaceSoft: Color(0xFFF7F7FA),
     border: Color(0xFFE7E8EE),
     text: Color(0xFF18181C),
-    textSoft: Color(0xFF4A4D57),
-    textMuted: Color(0xFF7B7F8A),
+    textSoft: Color(0xFF4D515C),
+    textMuted: Color(0xFF8E929E),
     navBackground: Color(0xFFFFFFFF),
     navBorder: Color(0xFFE7E8EE),
-    accentStart: Color(0xFF135DFF),
-    accentEnd: Color(0xFF8A32F4),
+    accentStart: Color(0xFF5A92FF),
+    accentEnd: Color(0xFF8EBCFF),
     iconBackground: Color(0xFFF4F5F8),
     buttonText: Color(0xFFFFFFFF),
   );
 
-  static const black = SafeHavenColors(
+  static const dark = SafeHavenColors(
     background: Color(0xFF0B0B10),
     surface: Color(0xFF12131A),
     surfaceSoft: Color(0xFF191B24),
@@ -101,13 +115,14 @@ class SafeHavenTheme {
     textMuted: Color(0xFF9BA0AD),
     navBackground: Color(0xFF0F1016),
     navBorder: Color(0xFF232632),
-    accentStart: Color(0xFF135DFF),
-    accentEnd: Color(0xFF8A32F4),
+    accentStart: Color(0xFF3B71E8),
+    accentEnd: Color(0xFF6A97FF),
     iconBackground: Color(0xFF1B1E27),
     buttonText: Color(0xFFFFFFFF),
   );
 
   static SafeHavenColors of(BuildContext context) {
-    return SafeHavenThemeManager.instance.isDark ? black : light;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return isDark ? dark : light;
   }
 }

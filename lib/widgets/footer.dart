@@ -39,7 +39,7 @@ class SafeHavenFooter extends StatelessWidget {
             index: 1,
             selectedIndex: selectedIndex,
             icon: Icons.history_rounded,
-            label: 'History',
+            label: 'Recents',
             onSelected: onSelected,
           ),
           _FooterItem(

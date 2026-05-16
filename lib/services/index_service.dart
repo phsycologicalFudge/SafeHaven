@@ -1,5 +1,6 @@
 import 'package:safehaven/services/ratings/ranking_service.dart';
 import 'store_service.dart';
+import 'sync_service.dart';
 
 class IndexService {
   IndexService._();
@@ -24,7 +25,7 @@ class IndexService {
       if (pending != null) return pending;
     }
 
-    final fetch = StoreService.instance.fetchIndex().then((index) {
+    final fetch = SyncService.instance.syncStore().then((index) {
       _cache = index;
       _cacheTime = DateTime.now();
       return index;

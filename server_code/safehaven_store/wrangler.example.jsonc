@@ -9,10 +9,8 @@
       "database_id": "replace-with-your-d1-id"
     }
   ],
-  "triggers": {
-    "crons": [
-      "0 3 1 * *"
-    ]
+    "triggers": {
+    "crons": ["0 * * * *", "0 */6 * * *", "0 3 3 * *"]
   },
   "vars": {
     "DEMO_DEV_TOKEN": "dev-token-change-me",

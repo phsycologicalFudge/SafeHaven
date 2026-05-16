@@ -1,3 +1,4 @@
+import 'dart:developer';
 import '../device_identity_service.dart';
 import '../store_service.dart';
 
@@ -12,7 +13,10 @@ class RatingService {
     required int rating,
   }) async {
     final token = await DeviceIdentityService.instance.getToken();
-    if (token == null) return RatingResult.error;
+    if (token == null) {
+      log('token_missing');
+      return RatingResult.error;
+    }
 
     try {
       await StoreService.instance.submitRating(
@@ -22,17 +26,20 @@ class RatingService {
       );
       return RatingResult.ok;
     } on StoreApiException catch (e) {
+      log(e.message);
       switch (e.message) {
         case 'already_rated':
           return RatingResult.alreadyRated;
         case 'rate_limited':
           return RatingResult.rateLimited;
         case 'not_found':
+        case 'app_not_found':
           return RatingResult.notFound;
         default:
           return RatingResult.error;
       }
-    } catch (_) {
+    } catch (e) {
+      log(e.toString());
       return RatingResult.error;
     }
   }

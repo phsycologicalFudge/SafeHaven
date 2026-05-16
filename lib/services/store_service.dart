@@ -267,6 +267,7 @@ class PublicStoreApp {
     required this.repoUrl,
     required this.trustLevel,
     required this.category,
+    required this.upstream,
     required this.ratingAvg,
     required this.ratingCount,
     required this.versions,
@@ -281,6 +282,7 @@ class PublicStoreApp {
   final String repoUrl;
   final String trustLevel;
   final String category;
+  final String upstream;
   final double ratingAvg;
   final int ratingCount;
   final List<StoreVersion> versions;
@@ -299,6 +301,7 @@ class PublicStoreApp {
       repoUrl: _asString(json['repoUrl']),
       trustLevel: _normaliseTrustLevel(json['trustLevel']),
       category: _asString(json['category']),
+      upstream: _asString(json['upstream']),
       ratingAvg: _asDouble(json['ratingAvg']),
       ratingCount: _asInt(json['ratingCount']),
       versions: versions is List
@@ -314,7 +317,10 @@ class PublicStoreApp {
     );
   }
 
-  StoreVersion? get latestVersion => versions.isEmpty ? null : versions.first;
+  StoreVersion? get latestVersion {
+    if (versions.isEmpty) return null;
+    return versions.reduce((a, b) => a.versionCode >= b.versionCode ? a : b);
+  }
 
   bool get hasTrustBadge => trustLevel.isNotEmpty;
 
@@ -334,6 +340,10 @@ class PublicStoreApp {
   }
 
   String get trustDescription {
+    if (upstream.toLowerCase() == 'fdroid') {
+      return 'This application is from F-droid.';
+    }
+
     switch (trustLevel) {
       case 'security_reviewed':
         return 'This app has received an enhanced security review.';

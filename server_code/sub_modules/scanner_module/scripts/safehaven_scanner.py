@@ -1,9 +1,12 @@
 import asyncio
+import base64
 import hashlib
 import os
 import re
 import struct
+import sys
 import time
+import zipfile
 import httpx
 import subprocess
 import tempfile
@@ -20,12 +23,14 @@ DOWNLOAD_TIMEOUT = 60.0
 RESCAN_COOLDOWN  = 7 * 86400
 RESCAN_BATCH     = 10
 RESCAN_IDLE      = 30
+FORCE_RESCAN     = os.getenv("FORCE_RESCAN", "").strip().lower() in ("1", "true", "yes") or "--force-rescan" in sys.argv
 APKSIGNER_BIN    = os.getenv("APKSIGNER_BIN", "apksigner").strip()
 AAPT2_BIN        = os.getenv("AAPT2_BIN", "aapt2").strip()
 
 app = FastAPI(title="SafeHaven Scanner")
 
 _rescan_cache: dict[str, int] = {}
+_force_rescan_done: set[str] = set()
 
 try:
     import engine as _engine_mod
@@ -97,7 +102,142 @@ def extract_apk_manifest_info(apk_bytes: bytes) -> dict[str, Any]:
                 pass
 
 
-def extract_signing_cert_hash_with_apksigner(apk_bytes: bytes) -> str | None:
+_RASTER_EXTS: dict[str, str] = {
+    ".png":  "image/png",
+    ".webp": "image/webp",
+    ".jpg":  "image/jpeg",
+    ".jpeg": "image/jpeg",
+}
+
+_MIPMAP_DPI_ORDER = [
+    "xxxhdpi", "xxhdpi", "xhdpi", "hdpi", "mdpi", "anydpi", "nodpi", "",
+]
+
+
+def _dpi_rank(zip_path: str) -> int:
+    lower = zip_path.lower()
+    for rank, label in enumerate(_MIPMAP_DPI_ORDER):
+        if label and f"-{label}" in lower:
+            return rank
+    return len(_MIPMAP_DPI_ORDER)
+
+
+def _resource_basename(zip_path: str) -> str:
+    name = zip_path.rsplit("/", 1)[-1]
+    return name.rsplit(".", 1)[0].lower()
+
+
+def _icon_payload_from_zip_path(apk_zip: zipfile.ZipFile, zip_path: str) -> dict[str, str] | None:
+    lower = zip_path.lower()
+    ext = next((e for e in _RASTER_EXTS if lower.endswith(e)), None)
+    if ext is None:
+        return None
+
+    try:
+        icon_bytes = apk_zip.read(zip_path)
+    except KeyError:
+        return None
+
+    if not icon_bytes or len(icon_bytes) > 2 * 1024 * 1024:
+        return None
+
+    return {
+        "iconBase64":      base64.b64encode(icon_bytes).decode("ascii"),
+        "iconContentType": _RASTER_EXTS[ext],
+    }
+
+
+def _is_raster_icon_path(zip_path: str) -> bool:
+    lower = zip_path.lower()
+    if not any(lower.endswith(ext) for ext in _RASTER_EXTS):
+        return False
+
+    allowed_roots = (
+        "res/mipmap",
+        "res/drawable",
+        "res/raw",
+        "assets/",
+    )
+
+    if lower.startswith(allowed_roots):
+        return True
+
+    filename = lower.rsplit("/", 1)[-1]
+    return filename in (
+        "play_store.png",
+        "play_store.webp",
+        "store_icon.png",
+        "store_icon.webp",
+        "listing_icon.png",
+        "listing_icon.webp",
+        "icon.png",
+        "icon.webp",
+    )
+
+
+def _icon_candidate_score(zip_path: str) -> tuple[int, int, str]:
+    lower = zip_path.lower()
+    base = _resource_basename(zip_path)
+    filename = lower.rsplit("/", 1)[-1]
+
+    if base in ("ic_launcher", "launcher_icon", "app_icon"):
+        priority = 0
+    elif base in ("ic_launcher_round", "launcher_round"):
+        priority = 1
+    elif base in ("ic_launcher_foreground", "launcher_foreground"):
+        priority = 2
+    elif base in ("ic_launcher_monochrome", "launcher_monochrome"):
+        priority = 3
+    elif filename in (
+        "play_store.png",
+        "play_store.webp",
+        "store_icon.png",
+        "store_icon.webp",
+        "listing_icon.png",
+        "listing_icon.webp",
+        "feature_graphic.png",
+        "feature_graphic.webp",
+    ):
+        priority = 4
+    elif "launcher" in base:
+        priority = 5
+    elif "logo" in base:
+        priority = 6
+    elif "icon" in base:
+        priority = 7
+    else:
+        priority = 99
+
+    return (priority, _dpi_rank(zip_path), zip_path)
+
+
+def _aapt_icon_paths(stdout: str) -> list[tuple[int, str]]:
+    candidates: list[tuple[int, str]] = []
+
+    for line in stdout.splitlines():
+        line = line.strip()
+
+        m = re.match(r"application-icon-(\d+):'([^']+)'", line)
+        if m:
+            try:
+                candidates.append((int(m.group(1)), m.group(2)))
+            except ValueError:
+                pass
+            continue
+
+        m = re.match(r"application-icon:'([^']+)'", line)
+        if m:
+            candidates.append((0, m.group(1)))
+            continue
+
+        m = re.match(r"application:'[^']*'.*icon='([^']+)'", line)
+        if m:
+            candidates.append((0, m.group(1)))
+
+    return sorted(candidates, key=lambda x: x[0])
+
+
+def extract_apk_icon(apk_bytes: bytes) -> dict[str, str] | None:
     apk_path = ""
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".apk") as tmp:
@@ -105,23 +245,27 @@ def extract_signing_cert_hash_with_apksigner(apk_bytes: bytes) -> str | None:
             apk_path = tmp.name
 
         result = subprocess.run(
-            [APKSIGNER_BIN, "verify", "--print-certs", "--verbose", apk_path],
+            [AAPT2_BIN, "dump", "badging", apk_path],
             capture_output=True,
             text=True,
             timeout=20,
         )
 
-        output = f"{result.stdout}\n{result.stderr}"
         if result.returncode != 0:
             return None
 
-        for line in output.splitlines():
-            clean = line.strip()
-            lower = clean.lower()
-            if "certificate sha-256 digest:" in lower:
-                return clean.split(":", 1)[1].strip().replace(" ", "").lower()
-            if "signer #1 certificate sha-256 digest:" in lower:
-                return clean.split(":", 1)[1].strip().replace(" ", "").lower()
+        candidates = _aapt_icon_paths(result.stdout)
+        if not candidates:
+            return None
+
+        try:
+            with zipfile.ZipFile(apk_path, "r") as apk_zip:
+                for _, icon_path in candidates:
+                    payload = _icon_payload_from_zip_path(apk_zip, icon_path)
+                    if payload:
+                        return payload
+        except Exception:
+            pass
 
         return None
 
@@ -136,118 +280,79 @@ def extract_signing_cert_hash_with_apksigner(apk_bytes: bytes) -> str | None:
                 pass
 
 
-def extract_signing_cert_hash(apk_bytes: bytes) -> str | None:
-    try:
-        eocd_offset = apk_bytes.rfind(b"\x50\x4b\x05\x06")
-        if eocd_offset < 0:
-            return None
-
-        cd_offset = struct.unpack_from("<I", apk_bytes, eocd_offset + 16)[0]
-        if cd_offset < 24:
-            return None
-
-        if apk_bytes[cd_offset - 16:cd_offset] != b"APK Sig Block 42":
-            return None
-
-        sb_size  = struct.unpack_from("<Q", apk_bytes, cd_offset - 24)[0]
-        sb_start = cd_offset - 8 - sb_size
-        if sb_start < 0:
-            return None
-
-        pos = sb_start + 8
-        end = cd_offset - 24
-
-        sig_block = None
-        while pos + 12 <= end:
-            pair_len = struct.unpack_from("<Q", apk_bytes, pos)[0]
-            pair_id  = struct.unpack_from("<I", apk_bytes, pos + 8)[0]
-            if pair_id in (0x7109871A, 0xF05368C0):
-                sig_block = apk_bytes[pos + 12:pos + 8 + pair_len]
-                break
-            pos += 8 + pair_len
-
-        if sig_block is None:
-            return None
-
-        signers_data, _ = _parse_lp(sig_block, 0)
-        signer_data,  _ = _parse_lp(signers_data, 0)
-        signed_data,  _ = _parse_lp(signer_data, 0)
-        _, after_digests = _parse_lp(signed_data, 0)
-        certs_data,   _ = _parse_lp(signed_data, after_digests)
-        cert_bytes,   _ = _parse_lp(certs_data, 0)
-
-        return hashlib.sha256(cert_bytes).hexdigest()
-
-    except Exception:
-        return None
-
-
 def extract_best_signing_cert_hash(apk_bytes: bytes) -> str | None:
-    result = extract_signing_cert_hash_with_apksigner(apk_bytes)
-    return result if result else extract_signing_cert_hash(apk_bytes)
-
-
-async def check_hashes(hashes: list[str]) -> dict[str, Any]:
-    if not hashes:
-        return {"verdict": "not_checked", "matches": [], "note": "No hashes supplied"}
-
-    normalised = []
-    seen: set[str] = set()
-    for h in hashes:
-        if not isinstance(h, str):
-            continue
-        v = h.strip().lower()
-        if not v or v in seen:
-            continue
-        seen.add(v)
-        normalised.append(v)
-
-    if not normalised:
-        return {"verdict": "not_checked", "matches": [], "note": "No valid hashes after normalisation"}
-
+    apk_path = ""
     try:
-        async with httpx.AsyncClient(timeout=HASH_TIMEOUT) as http:
-            response = await http.post(
-                HASH_API_URL,
-                headers={"Content-Type": "application/json", "x-cs-key": HASH_API_KEY},
-                json=normalised,
-            )
-        response.raise_for_status()
-        data = response.json()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".apk") as tmp:
+            tmp.write(apk_bytes)
+            apk_path = tmp.name
 
-        if not isinstance(data, dict):
-            return {"verdict": "unknown", "matches": [], "note": "Unexpected response shape from hash API"}
+        result = subprocess.run(
+            [APKSIGNER_BIN, "verify", "--print-certs", apk_path],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        for line in result.stdout.splitlines():
+            if "certificate SHA-256 digest:" in line:
+                parts = line.split(":", 1)
+                if len(parts) == 2:
+                    return parts[1].strip().lower()
 
-        found = data.get("found", [])
-        if not isinstance(found, list):
-            found = []
-
-        found_normalised = []
-        found_seen: set[str] = set()
-        for h in found:
-            if not isinstance(h, str):
-                continue
-            v = h.strip().lower()
-            if not v or v in found_seen:
-                continue
-            found_seen.add(v)
-            found_normalised.append(v)
-
-        if found_normalised:
-            return {
-                "verdict": "known_malware",
-                "matches": [{"hash": h, "label": "known malware hash match"} for h in found_normalised],
-            }
-
-        return {"verdict": "clean", "matches": []}
-
-    except httpx.TimeoutException:
-        return {"verdict": "unknown", "matches": [], "note": "Hash check timed out"}
+        return None
     except Exception as exc:
-        return {"verdict": "unknown", "matches": [], "note": f"Hash check error: {exc}"}
+        print(f"[scanner] apksigner error: {exc}")
+        return None
+    finally:
+        if apk_path and os.path.exists(apk_path):
+            os.remove(apk_path)
 
 
-async def run_engine_scan(apk_bytes: bytes) -> dict | None:
+async def download_apk(url: str) -> bytes:
+    async with httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT) as client:
+        resp = await client.get(url, follow_redirects=True)
+        resp.raise_for_status()
+        return resp.content
+
+
+async def _check_hashes_remote(hashes: list[str]) -> dict:
+    async with httpx.AsyncClient(timeout=HASH_TIMEOUT) as client:
+        resp = await client.post(
+            HASH_API_URL,
+            json=hashes,
+            headers={"x-cs-key": HASH_API_KEY}
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        found = data.get("found", [])
+        return {"verdict": "known_malware" if found else "unknown", "matches": found}
+
+
+async def _check_hashes_local(hashes: list[str]) -> dict:
+    async with httpx.AsyncClient(timeout=HASH_TIMEOUT) as client:
+        resp = await client.post(
+            "http://127.0.0.1:8081/check_batch",
+            json=hashes
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        found = data.get("found", [])
+        return {"verdict": "known_malware" if found else "unknown", "matches": found}
+
+
+async def check_hashes(hashes: list[str]) -> dict:
+    try:
+        return await _check_hashes_remote(hashes)
+    except Exception as exc:
+        print(f"[scanner] remote hash check failed: {exc}, falling back to local")
+        try:
+            return await _check_hashes_local(hashes)
+        except Exception as local_exc:
+            print(f"[scanner] local hash check failed: {local_exc}")
+            return {"verdict": "unknown", "matches": []}
+
+
+async def run_engine_scan(apk_bytes: bytes) -> dict[str, Any] | None:
     if _engine_mod is None or not _engine_mod.is_available():
         return None
 
@@ -256,69 +361,61 @@ async def run_engine_scan(apk_bytes: bytes) -> dict | None:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".apk") as tmp:
             tmp.write(apk_bytes)
             apk_path = tmp.name
-        return await asyncio.to_thread(_engine_mod.scan, apk_path)
+            
+        result = await asyncio.to_thread(_engine_mod.scan, apk_path)
+        return result
     except Exception as exc:
         print(f"[scanner] engine scan error: {exc}")
-        return {"verdict": "unknown", "error": str(exc)}
+        return None
     finally:
-        if apk_path:
-            try:
-                os.remove(apk_path)
-            except Exception:
-                pass
+        if apk_path and os.path.exists(apk_path):
+            os.remove(apk_path)
 
 
-async def download_apk(url: str) -> bytes:
-    async with httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT, follow_redirects=True) as http:
-        response = await http.get(url)
-        response.raise_for_status()
-        return response.content
-
-
-async def post_scan_result(submission_id: str, result: dict[str, Any]) -> None:
-    async with httpx.AsyncClient(timeout=15.0) as http:
-        response = await http.post(
-            f"{CS_API_URL}/internal/store/scan-result",
-            headers={"Content-Type": "application/json", "x-vps-auth": VPS_AUTH_SECRET},
-            json={"submissionId": submission_id, **result},
-        )
-        response.raise_for_status()
-
-
-async def post_rescan_result(result: dict[str, Any]) -> None:
-    async with httpx.AsyncClient(timeout=15.0) as http:
-        response = await http.post(
-            f"{CS_API_URL}/internal/store/rescan-result",
-            headers={"Content-Type": "application/json", "x-vps-auth": VPS_AUTH_SECRET},
-            json=result,
-        )
-        response.raise_for_status()
-
-
-async def fetch_pending_scans() -> list[dict[str, Any]]:
-    async with httpx.AsyncClient(timeout=15.0) as http:
-        response = await http.get(
+async def fetch_pending_scans() -> list[dict]:
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(
             f"{CS_API_URL}/internal/store/pending-scans",
-            headers={"x-vps-auth": VPS_AUTH_SECRET},
+            headers={"x-vps-auth": VPS_AUTH_SECRET}
         )
-        response.raise_for_status()
-        return response.json().get("submissions", [])
+        resp.raise_for_status()
+        return resp.json().get("submissions", [])
 
 
-async def fetch_rescan_targets() -> list[dict[str, Any]]:
-    async with httpx.AsyncClient(timeout=15.0) as http:
-        response = await http.get(
+async def post_scan_result(submission_id: str, result: dict) -> None:
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{CS_API_URL}/internal/store/scan-result",
+            json={"submissionId": submission_id, **result},
+            headers={"x-vps-auth": VPS_AUTH_SECRET}
+        )
+        resp.raise_for_status()
+
+
+async def fetch_rescan_targets() -> list[dict]:
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(
             f"{CS_API_URL}/internal/store/rescan-targets",
-            headers={"x-vps-auth": VPS_AUTH_SECRET},
+            headers={"x-vps-auth": VPS_AUTH_SECRET}
         )
-        response.raise_for_status()
-        return response.json().get("targets", [])
+        resp.raise_for_status()
+        return resp.json().get("targets", [])
 
 
-async def process_submission(submission: dict[str, Any]) -> None:
-    submission_id       = submission.get("id", "")
-    download_url        = submission.get("downloadUrl", "")
-    package_name        = submission.get("package_name", "")
+async def post_rescan_result(result: dict) -> None:
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{CS_API_URL}/internal/store/rescan-result",
+            json=result,
+            headers={"x-vps-auth": VPS_AUTH_SECRET}
+        )
+        resp.raise_for_status()
+
+
+async def process_submission(submission: dict) -> None:
+    submission_id    = submission.get("id", "").strip()
+    download_url     = submission.get("downloadUrl", "").strip()
+    package_name     = submission.get("packageName", "").strip()
     version_code        = submission.get("version_code", "")
     auto_tracked        = bool(submission.get("autoTracked", False))
     stored_signing_hash = (submission.get("storedSigningKeyHash") or "").strip().lower() or None
@@ -344,6 +441,7 @@ async def process_submission(submission: dict[str, Any]) -> None:
     apk_size    = len(apk_bytes)
     signing_key = extract_best_signing_cert_hash(apk_bytes)
     manifest    = extract_apk_manifest_info(apk_bytes)
+    icon         = extract_apk_icon(apk_bytes)
     scanned_at  = int(time.time())
 
     print(f"[scanner] sha256={sha256} size={apk_size} signingKey={signing_key} manifest={manifest} for {submission_id}")
@@ -393,6 +491,9 @@ async def process_submission(submission: dict[str, Any]) -> None:
         payload["manifestVersionCode"] = manifest["versionCode"]
     if manifest.get("versionName"):
         payload["manifestVersionName"] = manifest["versionName"]
+    if icon:
+        payload["iconBase64"] = icon["iconBase64"]
+        payload["iconContentType"] = icon["iconContentType"]
 
     await post_scan_result(submission_id, payload)
     print(f"[scanner] result posted for {submission_id}")
@@ -419,6 +520,7 @@ async def process_rescan(target: dict[str, Any]) -> None:
     apk_size    = len(apk_bytes)
     signing_key = extract_best_signing_cert_hash(apk_bytes)
     manifest    = extract_apk_manifest_info(apk_bytes)
+    icon         = extract_apk_icon(apk_bytes)
     scanned_at  = int(time.time())
 
     hash_result    = await check_hashes([sha256])
@@ -450,10 +552,14 @@ async def process_rescan(target: dict[str, Any]) -> None:
         payload["manifestVersionCode"] = manifest["versionCode"]
     if manifest.get("versionName"):
         payload["manifestVersionName"] = manifest["versionName"]
+    if icon:
+        payload["iconBase64"] = icon["iconBase64"]
+        payload["iconContentType"] = icon["iconContentType"]
 
     try:
         await post_rescan_result(payload)
         _rescan_cache[cache_key] = scanned_at
+        _force_rescan_done.add(cache_key)
         print(f"[rescan] result posted for {cache_key}")
     except Exception as exc:
         print(f"[rescan] post failed for {cache_key}: {exc}")
@@ -486,7 +592,12 @@ async def rescan_loop() -> None:
 
             candidates = []
             for t in targets:
-                key          = f"{t.get('packageName')}@{t.get('versionCode')}"
+                key = f"{t.get('packageName')}@{t.get('versionCode')}"
+
+                if FORCE_RESCAN and key not in _force_rescan_done:
+                    candidates.append((0, t))
+                    continue
+
                 last_scanned = _rescan_cache.get(key) or t.get("scannedAt") or 0
                 if now - last_scanned >= RESCAN_COOLDOWN:
                     candidates.append((last_scanned, t))
@@ -536,5 +647,7 @@ async def health() -> dict[str, Any]:
         "api_url":       CS_API_URL,
         "poll_interval": POLL_INTERVAL,
         "rescan_cached": len(_rescan_cache),
+        "force_rescan":  FORCE_RESCAN,
+        "force_done":    len(_force_rescan_done),
         "engine":        engine_status,
     }

@@ -12,12 +12,14 @@ class InstalledPackageState {
     required this.versionCode,
     this.versionName,
     this.signingCertificateSha256,
+    this.installer,
   });
 
   final bool installed;
   final int versionCode;
   final String? versionName;
   final String? signingCertificateSha256;
+  final String? installer;
 
   bool canUpdateTo(StoreVersion? version) {
     if (!installed || version == null) return false;
@@ -70,6 +72,7 @@ class ApkInstallService {
       versionCode: _asInt(result['versionCode']),
       versionName: _asString(result['versionName']),
       signingCertificateSha256: _asString(result['signingCertificateSha256']),
+      installer: _asString(result['installer']),
     );
   }
 

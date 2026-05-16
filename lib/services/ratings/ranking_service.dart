@@ -13,24 +13,36 @@ class RankingService {
   final Random _random = Random();
 
   List<PublicStoreApp> topCharts(
-    List<PublicStoreApp> apps, {
-    int? limit,
-  }) {
-    final sorted = [...apps]
-      ..sort((a, b) {
-        final scoreCompare = _score(b).compareTo(_score(a));
-        if (scoreCompare != 0) return scoreCompare;
-        return a.name.toLowerCase().compareTo(b.name.toLowerCase());
-      });
+      List<PublicStoreApp> apps, {
+        int? limit,
+      }) {
+    final sorted = [...apps]..shuffle(_random);
+
+    sorted.sort((a, b) => _trendingScore(b).compareTo(_trendingScore(a)));
+
+    for (int i = 0; i < 3 && i < sorted.length; i++) {
+      final firstWord = sorted[i].name.trim().split(' ').first.toLowerCase();
+      if (firstWord == 'avarionx') {
+        for (int j = i + 1; j < sorted.length; j++) {
+          final nextFirstWord = sorted[j].name.trim().split(' ').first.toLowerCase();
+          if (nextFirstWord != 'avarionx') {
+            final temp = sorted[i];
+            sorted[i] = sorted[j];
+            sorted[j] = temp;
+            break;
+          }
+        }
+      }
+    }
 
     return sorted.take(limit ?? _randomLimit()).toList();
   }
 
   Future<List<PublicStoreApp>> recommended(
-    List<PublicStoreApp> apps, {
-    Iterable<PublicStoreApp> exclude = const [],
-    int? limit,
-  }) async {
+      List<PublicStoreApp> apps, {
+        Iterable<PublicStoreApp> exclude = const [],
+        int? limit,
+      }) async {
     final targetLimit = limit ?? _randomLimit();
     final excludedPackages = exclude.map((a) => a.packageName).toSet();
     final pool = apps
@@ -46,7 +58,9 @@ class RankingService {
       final categoryPool = pool
           .where((app) => _normalizeCategory(app.category) == dominantCategory)
           .toList()
-        ..sort((a, b) => _score(b).compareTo(_score(a)));
+        ..shuffle(_random);
+
+      categoryPool.sort((a, b) => _score(b).compareTo(_score(a)));
 
       final categoryLimit = min(2, targetLimit);
       final samplePool = categoryPool.take(3).toList()..shuffle(_random);
@@ -57,13 +71,13 @@ class RankingService {
     final fill = pool
         .where((app) => !selectedPackages.contains(app.packageName))
         .toList()
-      ..sort((a, b) {
-        final scoreA = _score(a) + _recencyBoost(a);
-        final scoreB = _score(b) + _recencyBoost(b);
-        final scoreCompare = scoreB.compareTo(scoreA);
-        if (scoreCompare != 0) return scoreCompare;
-        return a.name.toLowerCase().compareTo(b.name.toLowerCase());
-      });
+      ..shuffle(_random);
+
+    fill.sort((a, b) {
+      final scoreA = _score(a) + _recencyBoost(a);
+      final scoreB = _score(b) + _recencyBoost(b);
+      return scoreB.compareTo(scoreA);
+    });
 
     final topTierSize = min(fill.length, max(targetLimit * 2, targetLimit));
     final topTier = fill.take(topTierSize).toList()..shuffle(_random);
@@ -76,18 +90,32 @@ class RankingService {
   }
 
   double _score(PublicStoreApp app) {
-    if (app.ratingCount <= 0 || app.ratingAvg <= 0) return 0;
-    return app.ratingAvg * log(app.ratingCount + 1) / ln10;
+    if (app.ratingCount <= 0 || app.ratingAvg <= 0) return 0.0;
+    return app.ratingAvg * (log(app.ratingCount + 1) / ln10);
+  }
+
+  double _trendingScore(PublicStoreApp app) {
+    final baseScore = _score(app);
+    final added = app.latestVersion?.added;
+
+    if (added == null || added <= 0) return 0.0;
+
+    final nowSeconds = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    final ageDays = (nowSeconds - added) / 86400.0;
+
+    if (ageDays <= 0) return baseScore;
+
+    return baseScore / pow(ageDays + 2, 1.5);
   }
 
   double _recencyBoost(PublicStoreApp app) {
     final added = app.latestVersion?.added;
-    if (added == null || added <= 0) return 0;
+    if (added == null || added <= 0) return 0.0;
 
     final nowSeconds = DateTime.now().millisecondsSinceEpoch ~/ 1000;
     final ageSeconds = nowSeconds - added;
     if (ageSeconds <= 0) return _maxRecencyBoost;
-    if (ageSeconds >= _recencyWindow.inSeconds) return 0;
+    if (ageSeconds >= _recencyWindow.inSeconds) return 0.0;
 
     final remaining = 1 - (ageSeconds / _recencyWindow.inSeconds);
     return _maxRecencyBoost * remaining;

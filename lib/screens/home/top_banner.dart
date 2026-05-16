@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-
 import '../../services/theme/theme_manager.dart';
+import '../../widgets/animated_tap.dart';
 
 class TopBanner {
   static PreferredSizeWidget home({VoidCallback? onAccountTap}) {
@@ -9,10 +9,21 @@ class TopBanner {
       large: true,
       actions: [
         Padding(
-          padding: const EdgeInsets.only(right: 10),
-          child: IconButton(
-            onPressed: onAccountTap,
-            icon: const Icon(Icons.person_outline_rounded),
+          padding: const EdgeInsets.only(right: 12),
+          child: Center(
+            child: AnimatedTap(
+              borderRadius: 12,
+              scale: 0.94,
+              onTap: onAccountTap,
+              child: SizedBox(
+                width: 44,
+                height: 44,
+                child: const Icon(
+                  Icons.settings_rounded,
+                  size: 24,
+                ),
+              ),
+            ),
           ),
         ),
       ],

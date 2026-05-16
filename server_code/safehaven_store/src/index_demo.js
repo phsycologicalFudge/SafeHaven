@@ -1,4 +1,11 @@
-import { handleStore, runStoreAutoApprovals, runGitHubBootstrapImport } from "./store/store.js";
+import { 
+  handleStore, 
+  runStoreAutoApprovals, 
+  runGitHubBootstrapImport, 
+  runGitHubReadmeSweep, 
+  runFdroidSync, 
+  runUnclaimedRepoPolls 
+} from "./store/store.js";
 import { demoAuth } from "./store/auth_demo.js";
 import { renderDashboardHtml } from "./store/web/dashboard.js";
 
@@ -7,8 +14,6 @@ const html = (body, status = 200) =>
 
 export default {
   async fetch(request, env, ctx) {
-    ctx.waitUntil(runStoreAutoApprovals(env));
-
     const url    = new URL(request.url);
     const path   = url.pathname;
     const method = request.method;
@@ -21,10 +26,18 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runStoreAutoApprovals(env));
-
-    if (event.cron === "0 3 1 * *") {
-      ctx.waitUntil(runGitHubBootstrapImport(env));
+    switch (event.cron) {
+      case "0 * * * *":
+        ctx.waitUntil(runStoreAutoApprovals(env));
+        ctx.waitUntil(runUnclaimedRepoPolls(env));
+        break;
+      case "0 */6 * * *":
+        ctx.waitUntil(runGitHubReadmeSweep(env));
+        ctx.waitUntil(runFdroidSync(env));
+        break;
+      case "0 3 3 * *":
+        ctx.waitUntil(runGitHubBootstrapImport(env));
+        break;
     }
   },
 };

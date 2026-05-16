@@ -8,6 +8,7 @@ import '../../../services/theme/theme_manager.dart';
 import '../../../widgets/ratings/rating_sheet.dart';
 import 'app_screen_helpers.dart';
 import '../../../services/installer/store_update_service.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 class AppScreenHeader extends StatelessWidget {
   const AppScreenHeader({super.key, required this.app});
@@ -755,25 +756,34 @@ class AppScreenPreviewSection extends StatelessWidget {
           itemCount: shots.length,
           separatorBuilder: (_, __) => const SizedBox(width: 12),
           itemBuilder: (context, index) {
-            return Container(
-              width: 118,
-              decoration: BoxDecoration(
-                color: colors.surfaceSoft,
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: colors.border),
-              ),
-              clipBehavior: Clip.antiAlias,
-              child: Image.network(
-                shots[index],
-                fit: BoxFit.cover,
-                cacheWidth: 360,
-                cacheHeight: 680,
-                filterQuality: FilterQuality.medium,
-                errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-                loadingBuilder: (_, child, loadingProgress) {
-                  if (loadingProgress == null) return child;
-                  return const SizedBox.shrink();
-                },
+            return GestureDetector(
+              onTap: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (context) => _FullScreenGallery(
+                      screenshots: shots,
+                      initialIndex: index,
+                    ),
+                  ),
+                );
+              },
+              child: Container(
+                width: 118,
+                decoration: BoxDecoration(
+                  color: colors.surfaceSoft,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: colors.border),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: CachedNetworkImage(
+                  imageUrl: shots[index],
+                  fit: BoxFit.cover,
+                  memCacheWidth: 360,
+                  memCacheHeight: 680,
+                  filterQuality: FilterQuality.medium,
+                  placeholder: (_, __) => const SizedBox.shrink(),
+                  errorWidget: (_, __, ___) => const SizedBox.shrink(),
+                ),
               ),
             );
           },
@@ -1228,6 +1238,66 @@ class AppScreenSection extends StatelessWidget {
           ),
           child,
         ],
+      ),
+    );
+  }
+}
+
+class _FullScreenGallery extends StatefulWidget {
+  const _FullScreenGallery({
+    required this.screenshots,
+    required this.initialIndex,
+  });
+
+  final List<String> screenshots;
+  final int initialIndex;
+
+  @override
+  State<_FullScreenGallery> createState() => _FullScreenGalleryState();
+}
+
+class _FullScreenGalleryState extends State<_FullScreenGallery> {
+  late PageController _pageController;
+
+  @override
+  void initState() {
+    super.initState();
+    _pageController = PageController(initialPage: widget.initialIndex);
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      extendBodyBehindAppBar: true,
+      appBar: AppBar(
+        backgroundColor: Colors.black.withOpacity(0.5),
+        elevation: 0,
+        iconTheme: const IconThemeData(color: Colors.white),
+      ),
+      body: PageView.builder(
+        controller: _pageController,
+        itemCount: widget.screenshots.length,
+        itemBuilder: (context, index) {
+          return InteractiveViewer(
+            minScale: 1.0,
+            maxScale: 4.0,
+            child: Center(
+              child: CachedNetworkImage(
+                imageUrl: widget.screenshots[index],
+                fit: BoxFit.contain,
+                placeholder: (_, __) => const CircularProgressIndicator(color: Colors.white),
+                errorWidget: (_, __, ___) => const Icon(Icons.broken_image, color: Colors.white, size: 50),
+              ),
+            ),
+          );
+        },
       ),
     );
   }

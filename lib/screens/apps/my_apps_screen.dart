@@ -5,7 +5,7 @@ import '../../services/installer/apk_install_service.dart';
 import '../../services/store_service.dart';
 import '../../services/theme/theme_manager.dart';
 import '../../widgets/animated_tap.dart';
-import 'appScreen/app_screen.dart';
+import 'app_screen/app_screen.dart';
 
 PageRouteBuilder<void> _pushRoute(Widget page) {
   return PageRouteBuilder<void>(

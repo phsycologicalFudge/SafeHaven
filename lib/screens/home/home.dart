@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
-
+import 'package:permission_handler/permission_handler.dart';
 import '../../services/theme/theme_manager.dart';
 import '../../widgets/footer.dart';
-import '../account/developer_account_screen.dart';
-import '../apps/catalogue.dart';
+import '../account/settings/settings_screen.dart';
+import '../apps/catalogue_screen/catalogue_screen.dart';
 import '../apps/history_screen.dart';
 import '../apps/my_apps_screen.dart';
 import 'top_banner.dart';
@@ -25,6 +25,21 @@ class _HomeScreenState extends State<HomeScreen> {
   ];
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _requestNotificationPermission();
+    });
+  }
+
+  Future<void> _requestNotificationPermission() async {
+    final status = await Permission.notification.status;
+    if (status.isDenied) {
+      await Permission.notification.request();
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: SafeHavenThemeManager.instance,
@@ -37,8 +52,26 @@ class _HomeScreenState extends State<HomeScreen> {
               ? TopBanner.home(
             onAccountTap: () {
               Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => const DeveloperAccountScreen(),
+                PageRouteBuilder<void>(
+                  pageBuilder: (_, __, ___) => const SettingsScreen(),
+                  transitionDuration: const Duration(milliseconds: 260),
+                  reverseTransitionDuration: const Duration(milliseconds: 210),
+                  transitionsBuilder: (_, animation, __, child) {
+                    final curved = CurvedAnimation(
+                      parent: animation,
+                      curve: Curves.easeOutCubic,
+                    );
+                    return FadeTransition(
+                      opacity: curved,
+                      child: SlideTransition(
+                        position: Tween<Offset>(
+                          begin: const Offset(0, 0.04),
+                          end: Offset.zero,
+                        ).animate(curved),
+                        child: child,
+                      ),
+                    );
+                  },
                 ),
               );
             },
@@ -82,7 +115,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String _titleForIndex(int index) {
     switch (index) {
       case 1:
-        return 'History';
+        return 'Recently Viewed';
       case 2:
         return 'My Apps';
       default:

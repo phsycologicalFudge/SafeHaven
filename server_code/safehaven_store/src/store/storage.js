@@ -1,6 +1,8 @@
 const nowUnix = () => Math.floor(Date.now() / 1000);
 
 const INDEX_KEY = "index.json";
+const SEVEN_DAYS_SEC = 7 * 24 * 60 * 60;
+const CHANGELOG_KEY = "index_changelog.json";
 
 const hmacSha256 = async (key, message) => {
   const k = typeof key === "string" ? new TextEncoder().encode(key) : key;
@@ -211,6 +213,56 @@ export const putIndex = async (env, index) => {
   if (!res.ok) throw new Error(`index_put_failed:${res.status}`);
 };
 
+export const getChangelog = async (env) => {
+  const res = await s3Fetch(env, "GET", CHANGELOG_KEY);
+  if (res.status === 404) return { events: [] };
+  if (!res.ok) throw new Error(`changelog_fetch_failed:${res.status}`);
+  return res.json();
+};
+
+export const putIndexWithChangelog = async (env, newIndex) => {
+  const now = nowUnix();
+  newIndex.timestamp = now;
+
+  let oldIndex;
+  try {
+    oldIndex = await getIndex(env);
+  } catch {
+    oldIndex = emptyIndex();
+  }
+
+  const updates = [];
+  for (const newApp of newIndex.apps) {
+    const oldApp = oldIndex.apps.find((a) => a.packageName === newApp.packageName);
+    if (!oldApp || JSON.stringify(oldApp) !== JSON.stringify(newApp)) {
+      updates.push(newApp);
+    }
+  }
+
+  const removes = oldIndex.apps
+    .filter((oa) => !newIndex.apps.find((na) => na.packageName === oa.packageName))
+    .map((oa) => oa.packageName);
+
+  if (updates.length > 0 || removes.length > 0) {
+    const changelog = await getChangelog(env);
+    
+    changelog.events.push({
+      timestamp: now,
+      updates,
+      removes,
+    });
+
+    const cutoff = now - SEVEN_DAYS_SEC;
+    changelog.events = changelog.events.filter((e) => e.timestamp >= cutoff);
+
+    await s3Fetch(env, "PUT", CHANGELOG_KEY, JSON.stringify(changelog), {
+      "content-type": "application/json",
+    });
+  }
+
+  await putIndex(env, newIndex);
+};
+
 export const addOrUpdateApp = async (env, appEntry) => {
   const index = await getIndex(env);
   index.categories = CATEGORIES;
@@ -229,6 +281,7 @@ export const addOrUpdateApp = async (env, appEntry) => {
   }
   index.apps.sort((a, b) => a.packageName.localeCompare(b.packageName));
   await putIndex(env, index);
+  await putIndexWithChangelog(env, index);
 };
 
 export const addVersionToApp = async (env, packageName, versionEntry) => {
@@ -247,6 +300,7 @@ export const addVersionToApp = async (env, packageName, versionEntry) => {
   app.lastUpdated = nowUnix();
 
   await putIndex(env, index);
+  await putIndexWithChangelog(env, index);
 };
 
 export const removeVersionFromApp = async (env, packageName, versionCode) => {
@@ -324,6 +378,13 @@ export const copyStagingToProduction = async (env, sourcePackageName, destPackag
 
   const res = await s3Fetch(env, "PUT", dest, null, { "x-amz-copy-source": source });
   if (!res.ok) throw new Error(`copy_failed:${res.status}`);
+};
+
+export const promoteStagingToProduction = async (env, stagingKeyStr, prodKeyStr) => {
+  const c = cfg(env);
+  const res = await s3Fetch(env, "PUT", prodKeyStr, null, { "x-amz-copy-source": `/${c.bucket}/${stagingKeyStr}` });
+  if (!res.ok) throw new Error(`promote_failed:${res.status}`);
+  await s3Fetch(env, "DELETE", stagingKeyStr);
 };
 
 export const deleteStagingApk = async (env, packageName, versionCode) => {

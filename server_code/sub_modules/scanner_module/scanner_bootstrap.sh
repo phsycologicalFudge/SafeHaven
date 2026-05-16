@@ -9,6 +9,16 @@ VENV_DIR="$SCRIPT_DIR/.venv"
 SCANNER_PORT="8080"
 HASH_PORT="8081"
 PYTHON_BIN="python3"
+FORCE_RESCAN="${FORCE_RESCAN:-0}"
+WORKER_SECRET="fdroid-scraper-secret"
+
+for arg in "$@"; do
+  case "$arg" in
+    --force-rescan)
+      FORCE_RESCAN="1"
+      ;;
+  esac
+done
 
 cd "$SCRIPT_DIR"
 
@@ -44,9 +54,10 @@ pip install --upgrade pip
 pip install fastapi uvicorn httpx pydantic
 
 cat > "$SCRIPT_DIR/.env" <<EOF
-CS_API_URL="https://your-api.com"
-VPS_AUTH_SECRET="your-auth-secret"
+CS_API_URL="https://api.colourswift.com"
+VPS_AUTH_SECRET="enter-your-secret"
 POLL_INTERVAL="30"
+FORCE_RESCAN="$FORCE_RESCAN"
 APKSIGNER_BIN="$APKSIGNER_PATH"
 AAPT2_BIN="$AAPT2_PATH"
 ENGINE_ENABLED="1"
@@ -115,6 +126,23 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
+cat > /etc/systemd/system/safehaven-fdroid.service <<EOF
+[Unit]
+Description=SafeHaven F-Droid Index Syncer
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=$SCRIPTS_DIR
+Environment=WORKER_SECRET=$WORKER_SECRET
+ExecStart=/bin/bash -c "while true; do $VENV_DIR/bin/python3 fdroid_sync.py; sleep 3600; done"
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 systemctl daemon-reload
 
 systemctl enable safehaven-hash
@@ -128,3 +156,7 @@ systemctl status safehaven-defs --no-pager
 systemctl enable safehaven-scanner
 systemctl restart safehaven-scanner
 systemctl status safehaven-scanner --no-pager
+
+systemctl enable safehaven-fdroid
+systemctl restart safehaven-fdroid
+systemctl status safehaven-fdroid --no-pager
